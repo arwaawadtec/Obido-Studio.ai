@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'http';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -6,6 +7,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 dotenv.config();
 
 const app = express();
+const server = http.createServer(app);
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const isProduction = process.env.NODE_ENV === 'production';
 
@@ -360,9 +362,15 @@ app.get('/api/providers', (req, res) => {
 
 // Mount Vite middleware for dev or serve static files in production
 async function startServer() {
+  // Always serve static assets from public/ (favicons, manifests, etc.)
+  app.use(express.static('public'));
+
   if (!isProduction) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        ws: { server },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -373,7 +381,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`[Obido Studio] Server running at http://0.0.0.0:${PORT}`);
   });
 }

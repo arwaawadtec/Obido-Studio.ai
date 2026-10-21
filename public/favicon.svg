@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Obido Studio Brand Favicon -->
+  <rect width="32" height="32" rx="7" fill="#11152B" />
+  <!-- Abstract "O" Ring in Primary Indigo -->
+  <circle cx="16" cy="16" r="10.5" fill="none" stroke="#635BFF" stroke-width="3" stroke-linecap="round" />
+  <!-- Playhead Glyph in Cyan Accent -->
+  <path d="M13.5 11.2C13.5 10.4 14.4 9.9 15.1 10.3L21.5 14.5C22.2 14.9 22.2 16.0 21.5 16.4L15.1 20.6C14.4 21.0 13.5 20.5 13.5 19.7Z" fill="#38D9F9" />
+</svg>

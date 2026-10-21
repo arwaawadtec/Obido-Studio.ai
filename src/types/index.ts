@@ -29,6 +29,13 @@ export type WorkflowStage =
 
 export type JobStatus = 'idle' | 'queued' | 'processing' | 'succeeded' | 'failed' | 'cancelled';
 
+export interface UserPreferences {
+  useCase?: 'content_creation' | 'marketing' | 'education' | 'business' | 'other';
+  experienceLevel?: 'beginner' | 'intermediate' | 'advanced';
+  language?: 'en' | 'ar';
+  initialIdea?: string;
+}
+
 export interface User {
   id: string;
   name: string;
@@ -36,6 +43,10 @@ export interface User {
   role: 'creator' | 'producer' | 'admin';
   avatar?: string;
   tier: 'free' | 'pro' | 'studio';
+  hasCompletedOnboarding?: boolean;
+  preferences?: UserPreferences;
+  createdAt?: string;
+  lastLoginAt?: string;
 }
 
 export interface ProjectBrief {

@@ -6,7 +6,14 @@
 import React, { useState, useEffect } from 'react';
 import { Project } from './types';
 import { storage } from './services/storage';
+import { auth } from './services/auth';
+import { router, AppRoute } from './services/router';
 import { Navbar } from './components/layout/Navbar';
+import { LandingPage } from './components/landing/LandingPage';
+import { SignInPage } from './components/auth/SignInPage';
+import { SignUpPage } from './components/auth/SignUpPage';
+import { ForgotPasswordPage } from './components/auth/ForgotPasswordPage';
+import { OnboardingPage } from './components/onboarding/OnboardingPage';
 import { Dashboard } from './components/dashboard/Dashboard';
 import { Workspace } from './components/workspace/Workspace';
 import { TemplatesView } from './components/templates/TemplatesView';
@@ -15,19 +22,30 @@ import { SettingsModal } from './components/settings/SettingsModal';
 import { HelpModal } from './components/help/HelpModal';
 
 export default function App() {
-  const [projects, setProjects] = useState<Project[]>(storage.getProjects());
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(storage.getActiveProjectId());
-  const [currentView, setCurrentView] = useState<'dashboard' | 'workspace' | 'templates'>('dashboard');
+  const [currentUser, setCurrentUser] = useState(auth.getCurrentUser());
+  const [currentRoute, setCurrentRoute] = useState<AppRoute>(router.getRoute());
+  const [projects, setProjects] = useState<Project[]>(storage.getProjects(auth.getCurrentUser()?.id));
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
 
   useEffect(() => {
-    // Sync storage updates
-    const unsubscribe = storage.subscribe(() => {
-      setProjects(storage.getProjects());
-      setActiveProjectId(storage.getActiveProjectId());
+    // Subscribe to router
+    const unsubRouter = router.subscribe((route) => {
+      setCurrentRoute(route);
+    });
+
+    // Subscribe to auth
+    const unsubAuth = auth.subscribe(() => {
+      const user = auth.getCurrentUser();
+      setCurrentUser(user);
+      setProjects(storage.getProjects(user?.id));
+    });
+
+    // Subscribe to storage
+    const unsubStorage = storage.subscribe(() => {
+      setProjects(storage.getProjects(auth.getCurrentUser()?.id));
     });
 
     // Initialize document direction from saved language preference
@@ -35,42 +53,77 @@ export default function App() {
     document.documentElement.setAttribute('dir', initialLang === 'ar' ? 'rtl' : 'ltr');
     document.documentElement.setAttribute('lang', initialLang);
 
-    return unsubscribe;
+    return () => {
+      unsubRouter();
+      unsubAuth();
+      unsubStorage();
+    };
   }, []);
-
-  const activeProject = projects.find((p) => p.id === activeProjectId) || projects[0];
 
   const handleSelectProject = (projectId: string) => {
     storage.setActiveProjectId(projectId);
-    setActiveProjectId(projectId);
-    setCurrentView('workspace');
+    router.navigate(`/app/workspace/${projectId}`);
   };
 
   const handleProjectCreated = (newProjectId: string) => {
     handleSelectProject(newProjectId);
   };
 
+  // Determine active project for workspace
+  let workspaceProjectId: string | undefined;
+  if (currentRoute.path === '/app/workspace') {
+    workspaceProjectId = (currentRoute as any).projectId;
+  }
+  const activeWorkspaceProject = workspaceProjectId
+    ? projects.find((p) => p.id === workspaceProjectId) || storage.getProject(workspaceProjectId, currentUser?.id)
+    : projects[0];
+
+  // Route 1: Public Marketing Landing Page
+  if (currentRoute.path === '/') {
+    return (
+      <>
+        <LandingPage onOpenHelp={() => setIsHelpOpen(true)} />
+        <HelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
+        <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+      </>
+    );
+  }
+
+  // Route 2: Sign In
+  if (currentRoute.path === '/sign-in') {
+    return <SignInPage />;
+  }
+
+  // Route 3: Sign Up
+  if (currentRoute.path === '/sign-up') {
+    return <SignUpPage />;
+  }
+
+  // Route 4: Forgot Password
+  if (currentRoute.path === '/forgot-password') {
+    return <ForgotPasswordPage />;
+  }
+
+  // Route 5: Onboarding
+  if (currentRoute.path === '/onboarding') {
+    return <OnboardingPage />;
+  }
+
+  // Authenticated Studio App Shell (`/app`, `/app/projects`, `/app/workspace/:projectId`, `/app/templates`)
   return (
     <div className="min-h-screen bg-[#F6F7FB] text-[#171A2B] flex flex-col font-sans selection:bg-[#635BFF]/20 selection:text-[#11152B]">
       {/* Top Application Shell Navbar */}
       <Navbar
-        currentView={currentView}
-        onNavigate={(view) => {
-          if (view === 'workspace' && !activeProject) {
-            setIsCreateModalOpen(true);
-            return;
-          }
-          setCurrentView(view);
-        }}
+        currentPath={router.getPath()}
         onOpenCreateModal={() => setIsCreateModalOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenHelp={() => setIsHelpOpen(true)}
-        activeProjectTitle={activeProject?.title}
+        activeProjectTitle={activeWorkspaceProject?.title}
       />
 
-      {/* Main Content Area */}
+      {/* Main Authenticated View Content */}
       <div className="flex-1">
-        {currentView === 'dashboard' && (
+        {(currentRoute.path === '/app' || currentRoute.path === '/app/projects') && (
           <Dashboard
             projects={projects}
             onSelectProject={handleSelectProject}
@@ -78,14 +131,14 @@ export default function App() {
           />
         )}
 
-        {currentView === 'workspace' && activeProject && (
+        {currentRoute.path === '/app/workspace' && activeWorkspaceProject && (
           <Workspace
-            project={activeProject}
-            onBackToDashboard={() => setCurrentView('dashboard')}
+            project={activeWorkspaceProject}
+            onBackToDashboard={() => router.navigate('/app')}
           />
         )}
 
-        {currentView === 'templates' && (
+        {currentRoute.path === '/app/templates' && (
           <TemplatesView onSelectProject={handleSelectProject} />
         )}
       </div>

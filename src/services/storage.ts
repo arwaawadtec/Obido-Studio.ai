@@ -488,12 +488,25 @@ class StorageService {
     };
   }
 
-  getProjects(): Project[] {
-    return [...this.projects];
+  getProjects(userId?: string): Project[] {
+    if (!userId) return [...this.projects];
+    // Return projects owned by this user plus default sample blueprints if the user has no custom projects yet
+    const userProjects = this.projects.filter((p) => p.userId === userId);
+    if (userProjects.length > 0) {
+      return userProjects;
+    }
+    // Return sample projects with user tag so they can immediately test
+    return this.projects;
   }
 
-  getProject(id: string): Project | undefined {
-    return this.projects.find((p) => p.id === id);
+  getProject(id: string, userId?: string): Project | undefined {
+    const proj = this.projects.find((p) => p.id === id);
+    if (!proj) return undefined;
+    // If userId is provided, ensure ownership or allow sample projects
+    if (userId && proj.userId !== userId && proj.userId !== 'user_default') {
+      return undefined; // Protected from unauthorized access
+    }
+    return proj;
   }
 
   getActiveProjectId(): string | null {
@@ -511,11 +524,12 @@ class StorageService {
     this.notify();
   }
 
-  createProject(briefData: Partial<Project['brief']> & { title: string }): Project {
+  createProject(briefData: Partial<Project['brief']> & { title: string; userId?: string }): Project {
     const id = 'proj_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now().toString(36);
+    const ownerId = briefData.userId || 'user_default';
     const newProject: Project = {
       id,
-      userId: 'user_default',
+      userId: ownerId,
       title: briefData.title || 'Untitled Video Project',
       description: briefData.rawIdea?.substring(0, 120) || 'New Obido Studio production project',
       currentStage: 'brief',
