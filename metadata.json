@@ -1,0 +1,6 @@
+{
+  "name": "Obido Studio",
+  "description": "Professional AI-powered video creation platform guiding creators from brief to final export with structured workflows, scene storyboarding, prompt engineering, and multi-track timeline editing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
