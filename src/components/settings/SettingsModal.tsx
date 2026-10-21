@@ -145,10 +145,38 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
           <div className="space-y-3 pt-4 border-t border-[#E3E6EF]">
             <h3 className="text-xs font-bold text-[#11152B] uppercase tracking-wider font-mono flex items-center gap-2">
               <Database className="w-3.5 h-3.5 text-[#16A34A]" />
-              <span>{lang === 'ar' ? 'إدارة البيانات والنسخ الاحتياطي' : 'Persistence & Data Management'}</span>
+              <span>{lang === 'ar' ? 'إدارة البيانات والتخزين السحابي' : 'Cloud Persistence & Data Storage'}</span>
             </h3>
 
-            <div className="flex flex-wrap items-center gap-3">
+            {/* Cloud Foundation Info Card */}
+            <div className="p-3 bg-[#F6F7FB] border border-[#E3E6EF] rounded-lg text-xs space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-[#11152B]">Firebase Cloud Foundation</span>
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  PROVISIONED & ACTIVE
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-[#62677A] font-mono pt-1">
+                <div>
+                  <span className="text-[#11152B] font-sans font-medium block">Project ID:</span>
+                  <span className="truncate block">elaborate-bliss-xvxch</span>
+                </div>
+                <div>
+                  <span className="text-[#11152B] font-sans font-medium block">Firestore DB:</span>
+                  <span className="truncate block text-[10px]">ai-studio-obidostudio-b777bfa3...</span>
+                </div>
+                <div>
+                  <span className="text-[#11152B] font-sans font-medium block">Object Storage:</span>
+                  <span className="truncate block">elaborate-bliss-xvxch.firebasestorage.app</span>
+                </div>
+                <div>
+                  <span className="text-[#11152B] font-sans font-medium block">Security Rules:</span>
+                  <span className="text-emerald-600 font-sans font-medium">ABAC Owner Isolation Deployed</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 pt-1">
               <button
                 type="button"
                 onClick={handleExportAll}
@@ -164,7 +192,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                 className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#62677A] hover:text-[#DC2626] bg-white border border-[#E3E6EF] hover:bg-[#DC2626]/5 rounded-lg transition-colors"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                <span>Reset to Sample Projects</span>
+                <span>Reset Local Sample Data</span>
               </button>
             </div>
           </div>

@@ -1,4 +1,5 @@
 import { Project, VideoTemplate, WorkflowStage, Scene, PromptVersion, Asset, GenerationJob, TimelineClip } from '../types';
+import { firestoreService } from './firestoreService';
 
 const STORAGE_KEY = 'obido_studio_projects_v1';
 const ACTIVE_PROJECT_KEY = 'obido_studio_active_project_id';
@@ -489,31 +490,63 @@ class StorageService {
   }
 
   getProjects(userId?: string): Project[] {
-    if (!userId) return [...this.projects];
-    // Return projects owned by this user plus default sample blueprints if the user has no custom projects yet
-    const userProjects = this.projects.filter((p) => p.userId === userId);
-    if (userProjects.length > 0) {
-      return userProjects;
+    if (!userId) {
+      // Unauthenticated / guest preview: return default projects
+      return [...this.projects];
     }
-    // Return sample projects with user tag so they can immediately test
-    return this.projects;
+    // Return ONLY projects belonging to this authenticated user.
+    // Do NOT seed production accounts with demo projects.
+    return this.projects.filter((p) => p.userId === userId);
+  }
+
+  async queryProjects(userId?: string, shouldSimulateError: boolean = false): Promise<Project[]> {
+    if (shouldSimulateError) {
+      throw new Error('Unable to retrieve projects from database service. Please check your connection.');
+    }
+
+    // Cloud persistence path: when authenticated with a real cloud UID, query Firestore
+    if (firestoreService.isAvailable() && userId && userId !== 'user_default' && !userId.startsWith('user_demo_')) {
+      try {
+        const cloudProjects = await firestoreService.getProjects(userId);
+        // Update local memory cache with latest cloud documents
+        const otherProjects = this.projects.filter((p) => p.userId !== userId);
+        this.projects = [...otherProjects, ...cloudProjects];
+        this.persist();
+        return cloudProjects;
+      } catch (err) {
+        console.warn('[StorageService] Firestore query error, falling back to local cache:', err);
+        return this.getProjects(userId);
+      }
+    }
+
+    // Local / demo latency simulation
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    return this.getProjects(userId);
   }
 
   getProject(id: string, userId?: string): Project | undefined {
     const proj = this.projects.find((p) => p.id === id);
     if (!proj) return undefined;
-    // If userId is provided, ensure ownership or allow sample projects
+    // If userId is provided, ensure ownership
     if (userId && proj.userId !== userId && proj.userId !== 'user_default') {
       return undefined; // Protected from unauthorized access
     }
     return proj;
   }
 
-  getActiveProjectId(): string | null {
+  getActiveProjectId(userId?: string): string | null {
     try {
-      return localStorage.getItem(ACTIVE_PROJECT_KEY) || (this.projects[0]?.id ?? null);
+      const stored = localStorage.getItem(ACTIVE_PROJECT_KEY);
+      if (stored) {
+        const proj = this.projects.find((p) => p.id === stored);
+        if (proj && (!userId || proj.userId === userId)) {
+          return stored;
+        }
+      }
+      const userProjects = this.getProjects(userId);
+      return userProjects[0]?.id ?? null;
     } catch {
-      return this.projects[0]?.id ?? null;
+      return null;
     }
   }
 
@@ -526,17 +559,31 @@ class StorageService {
 
   createProject(briefData: Partial<Project['brief']> & { title: string; userId?: string }): Project {
     const id = 'proj_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now().toString(36);
-    const ownerId = briefData.userId || 'user_default';
+    
+    // Determine owner: explicit userId, or active session user, fallback to guest
+    let ownerId = briefData.userId;
+    if (!ownerId) {
+      try {
+        const session = localStorage.getItem('obido_studio_auth_user_v1');
+        if (session) {
+          const u = JSON.parse(session);
+          ownerId = u?.id;
+        }
+      } catch {}
+    }
+    const finalOwnerId: string = ownerId || 'user_default';
+    const isCloudUser = firestoreService.isAvailable() && finalOwnerId !== 'user_default' && !finalOwnerId.startsWith('user_demo_');
+
     const newProject: Project = {
       id,
-      userId: ownerId,
+      userId: finalOwnerId,
       title: briefData.title || 'Untitled Video Project',
       description: briefData.rawIdea?.substring(0, 120) || 'New Obido Studio production project',
       currentStage: 'brief',
       completedStages: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      isLocalOnly: true,
+      isLocalOnly: !isCloudUser,
       brief: {
         title: briefData.title || 'Untitled Video Project',
         purpose: briefData.purpose || 'explainer',
@@ -573,6 +620,13 @@ class StorageService {
     this.projects.unshift(newProject);
     this.setActiveProjectId(id);
     this.persist();
+
+    if (isCloudUser) {
+      firestoreService.saveProject(newProject, finalOwnerId).catch((err) => {
+        console.warn('[StorageService] Background cloud save error:', err);
+      });
+    }
+
     return newProject;
   }
 
@@ -605,11 +659,20 @@ class StorageService {
       updatedAt: new Date().toISOString(),
     };
 
+    const updated = this.projects[idx];
     this.persist();
-    return this.projects[idx];
+
+    if (firestoreService.isAvailable() && updated.userId !== 'user_default' && !updated.userId.startsWith('user_demo_')) {
+      firestoreService.saveProject(updated, updated.userId).catch((err) => {
+        console.warn('[StorageService] Background cloud update error:', err);
+      });
+    }
+
+    return updated;
   }
 
   deleteProject(id: string): boolean {
+    const target = this.projects.find((p) => p.id === id);
     const initialLen = this.projects.length;
     this.projects = this.projects.filter((p) => p.id !== id);
     if (this.projects.length !== initialLen) {
@@ -617,6 +680,13 @@ class StorageService {
         this.setActiveProjectId(this.projects[0]?.id ?? '');
       }
       this.persist();
+
+      if (target && firestoreService.isAvailable() && target.userId !== 'user_default' && !target.userId.startsWith('user_demo_')) {
+        firestoreService.deleteProject(id, target.userId).catch((err) => {
+          console.warn('[StorageService] Background cloud delete error:', err);
+        });
+      }
+
       return true;
     }
     return false;

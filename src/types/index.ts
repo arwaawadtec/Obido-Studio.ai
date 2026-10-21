@@ -47,6 +47,8 @@ export interface User {
   preferences?: UserPreferences;
   createdAt?: string;
   lastLoginAt?: string;
+  authType?: 'cloud' | 'local_demo';
+  firebaseUid?: string;
 }
 
 export interface ProjectBrief {
@@ -229,6 +231,8 @@ export interface Project {
   createdAt: string;
   updatedAt: string;
   isLocalOnly: boolean;
+  migratedFromLocal?: boolean;
+  migratedAt?: string;
 }
 
 export interface VideoTemplate {

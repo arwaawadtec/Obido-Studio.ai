@@ -87,6 +87,21 @@ export const SignUpPage: React.FC = () => {
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md px-4 sm:px-0">
         <div className="bg-white py-8 px-6 sm:px-10 border border-[#E3E6EF] rounded-2xl shadow-sm space-y-6">
+          {/* Provider Transparency Banner */}
+          <div className="p-3 bg-[#F6F7FB] border border-[#E3E6EF] rounded-lg flex items-start gap-2.5 text-[11px] text-[#62677A]">
+            <Shield className="w-3.5 h-3.5 text-[#635BFF] shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <span className="font-semibold text-[#11152B] block">
+                {auth.isFirebaseConfigured() ? 'Cloud Authentication Active' : 'Development Auth Sandbox Active'}
+              </span>
+              <p>
+                {auth.isFirebaseConfigured()
+                  ? 'Real Firebase Authentication and per-user Firestore isolation connected.'
+                  : 'Secure local authentication sandbox without exposing plaintext secrets.'}
+              </p>
+            </div>
+          </div>
+
           {errorMsg && (
             <div className="p-3 bg-[#DC2626]/10 border border-[#DC2626]/20 rounded-lg text-xs text-[#DC2626] flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />

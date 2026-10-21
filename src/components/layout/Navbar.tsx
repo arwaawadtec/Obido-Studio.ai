@@ -174,9 +174,20 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <div className="px-4 py-2 border-b border-[#E3E6EF] space-y-0.5">
                     <span className="font-bold text-[#11152B] block truncate">{currentUser.name}</span>
                     <span className="text-[11px] text-[#62677A] block truncate">{currentUser.email}</span>
-                    <span className="inline-block mt-1 text-[10px] uppercase font-mono font-bold text-[#635BFF] bg-[#635BFF]/10 px-1.5 py-0.5 rounded">
-                      {currentUser.tier} Plan
-                    </span>
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <span className="text-[10px] uppercase font-mono font-bold text-[#635BFF] bg-[#635BFF]/10 px-1.5 py-0.5 rounded">
+                        {currentUser.tier} Plan
+                      </span>
+                      <span
+                        className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+                          currentUser.authType === 'cloud'
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            : 'bg-amber-50 text-amber-700 border border-amber-200'
+                        }`}
+                      >
+                        {currentUser.authType === 'cloud' ? 'Cloud Auth' : 'Demo Sandbox'}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="py-1">

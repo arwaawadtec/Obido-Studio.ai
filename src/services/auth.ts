@@ -1,9 +1,22 @@
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider,
+  signOut as firebaseSignOut,
+  sendPasswordResetEmail,
+  updateProfile,
+  onAuthStateChanged,
+  User as FirebaseUser,
+} from 'firebase/auth';
+import { firebaseAuth, isFirebaseAvailable } from './firebase';
+import { firestoreService } from './firestoreService';
 import { User, UserPreferences } from '../types';
 
 const AUTH_USER_KEY = 'obido_studio_auth_user_v1';
 const REGISTERED_USERS_KEY = 'obido_studio_registered_users_v1';
 
-// Seed demo user so testing sign-in immediately works
+// Seed demo users for local fallback / testing
 const INITIAL_DEMO_USERS: User[] = [
   {
     id: 'user_demo_creator',
@@ -11,6 +24,7 @@ const INITIAL_DEMO_USERS: User[] = [
     email: 'creator@obidostudio.com',
     role: 'creator',
     tier: 'pro',
+    authType: 'local_demo',
     hasCompletedOnboarding: true,
     preferences: {
       useCase: 'content_creation',
@@ -26,6 +40,7 @@ const INITIAL_DEMO_USERS: User[] = [
     email: 'demo@obidostudio.com',
     role: 'creator',
     tier: 'studio',
+    authType: 'local_demo',
     hasCompletedOnboarding: true,
     preferences: {
       useCase: 'business',
@@ -34,37 +49,105 @@ const INITIAL_DEMO_USERS: User[] = [
     },
     createdAt: new Date(Date.now() - 86400000 * 60).toISOString(),
     lastLoginAt: new Date().toISOString(),
-  }
+  },
 ];
 
 class AuthService {
   private currentUser: User | null = null;
   private listeners: Array<() => void> = [];
+  private isAuthReady = false;
 
   constructor() {
     this.init();
   }
 
   private init() {
-    try {
-      // Ensure seed users exist in registered users store
-      const storedUsers = localStorage.getItem(REGISTERED_USERS_KEY);
-      if (!storedUsers) {
-        localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(INITIAL_DEMO_USERS));
+    if (isFirebaseAvailable && firebaseAuth) {
+      // Real Firebase Auth listener
+      onAuthStateChanged(firebaseAuth, async (fbUser: FirebaseUser | null) => {
+        if (fbUser) {
+          await this.syncFirebaseUser(fbUser);
+        } else {
+          // If no active Firebase user, check if local demo session is active
+          const sessionUser = localStorage.getItem(AUTH_USER_KEY);
+          if (sessionUser) {
+            try {
+              const parsed = JSON.parse(sessionUser);
+              if (parsed.authType === 'local_demo') {
+                this.currentUser = parsed;
+              } else {
+                this.currentUser = null;
+                localStorage.removeItem(AUTH_USER_KEY);
+              }
+            } catch {
+              this.currentUser = null;
+            }
+          } else {
+            this.currentUser = null;
+          }
+        }
+        this.isAuthReady = true;
+        this.notify();
+      });
+    } else {
+      // Local development fallback
+      try {
+        const storedUsers = localStorage.getItem(REGISTERED_USERS_KEY);
+        if (!storedUsers) {
+          localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(INITIAL_DEMO_USERS));
+        }
+        const sessionUser = localStorage.getItem(AUTH_USER_KEY);
+        if (sessionUser) {
+          this.currentUser = JSON.parse(sessionUser);
+        }
+      } catch (e) {
+        console.warn('AuthService fallback init error', e);
       }
-
-      // Check for active session
-      const sessionUser = localStorage.getItem(AUTH_USER_KEY);
-      if (sessionUser) {
-        this.currentUser = JSON.parse(sessionUser);
-      } else {
-        // By default on public landing page, user is unauthenticated
-        this.currentUser = null;
-      }
-    } catch (e) {
-      console.warn('AuthService init error', e);
-      this.currentUser = null;
+      this.isAuthReady = true;
     }
+  }
+
+  private async syncFirebaseUser(fbUser: FirebaseUser): Promise<User> {
+    const existing = await firestoreService.getUserProfile(fbUser.uid);
+    let appUser: User;
+
+    if (existing) {
+      appUser = {
+        ...existing,
+        id: fbUser.uid,
+        email: fbUser.email || existing.email,
+        name: fbUser.displayName || existing.name || 'Studio Creator',
+        avatar: fbUser.photoURL || existing.avatar,
+        authType: 'cloud',
+        firebaseUid: fbUser.uid,
+        lastLoginAt: new Date().toISOString(),
+      };
+    } else {
+      appUser = {
+        id: fbUser.uid,
+        name: fbUser.displayName || (fbUser.email?.split('@')[0] ?? 'Studio Creator'),
+        email: fbUser.email || '',
+        role: 'creator',
+        tier: 'pro',
+        authType: 'cloud',
+        firebaseUid: fbUser.uid,
+        avatar: fbUser.photoURL || undefined,
+        hasCompletedOnboarding: false,
+        preferences: {
+          useCase: 'content_creation',
+          experienceLevel: 'intermediate',
+          language: 'en',
+        },
+        createdAt: new Date().toISOString(),
+        lastLoginAt: new Date().toISOString(),
+      };
+      // Persist new user profile to Firestore
+      await firestoreService.saveUserProfile(appUser);
+    }
+
+    this.currentUser = appUser;
+    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(appUser));
+    return appUser;
   }
 
   private notify() {
@@ -86,76 +169,77 @@ class AuthService {
     return !!this.currentUser;
   }
 
-  getRegisteredUsers(): User[] {
-    try {
-      const stored = localStorage.getItem(REGISTERED_USERS_KEY);
-      return stored ? JSON.parse(stored) : INITIAL_DEMO_USERS;
-    } catch {
-      return INITIAL_DEMO_USERS;
-    }
+  isReady(): boolean {
+    return this.isAuthReady;
   }
 
-  private saveRegisteredUsers(users: User[]) {
-    try {
-      localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(users));
-    } catch (e) {
-      console.warn('Failed to save registered users', e);
-    }
+  isFirebaseConfigured(): boolean {
+    return isFirebaseAvailable;
   }
 
-  private setSessionUser(user: User | null) {
-    this.currentUser = user;
-    try {
-      if (user) {
-        localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
-      } else {
-        localStorage.removeItem(AUTH_USER_KEY);
-      }
-    } catch (e) {
-      console.warn('Failed to update session user', e);
+  async getIdToken(): Promise<string | null> {
+    if (isFirebaseAvailable && firebaseAuth && firebaseAuth.currentUser) {
+      return await firebaseAuth.currentUser.getIdToken();
     }
-    this.notify();
+    return null;
   }
 
   async signIn(email: string, password?: string): Promise<{ success: boolean; user?: User; error?: string }> {
-    // Artificial latency for authentic auth experience
-    await new Promise((res) => setTimeout(res, 450));
-
     const cleanEmail = email.trim().toLowerCase();
     if (!cleanEmail || !cleanEmail.includes('@')) {
       return { success: false, error: 'Please enter a valid email address.' };
     }
 
-    const registered = this.getRegisteredUsers();
-    let existing = registered.find((u) => u.email.toLowerCase() === cleanEmail);
-
-    if (!existing) {
-      // If logging in with demo credentials or any email, allow clean creation or fallback
-      const derivedName = cleanEmail.split('@')[0].replace(/[._-]/g, ' ');
-      const capitalized = derivedName.charAt(0).toUpperCase() + derivedName.slice(1);
-      existing = {
-        id: 'user_' + Math.random().toString(36).substring(2, 9),
-        name: capitalized,
-        email: cleanEmail,
-        role: 'creator',
-        tier: 'free',
-        hasCompletedOnboarding: false,
-        createdAt: new Date().toISOString(),
-        lastLoginAt: new Date().toISOString(),
-      };
-      this.saveRegisteredUsers([...registered, existing]);
-    } else {
-      existing.lastLoginAt = new Date().toISOString();
-      this.saveRegisteredUsers(registered.map((u) => (u.id === existing!.id ? existing! : u)));
+    // If Firebase Auth is available, execute real cloud authentication
+    if (isFirebaseAvailable && firebaseAuth) {
+      try {
+        if (!password) {
+          return { success: false, error: 'Password is required for cloud authentication.' };
+        }
+        const userCred = await signInWithEmailAndPassword(firebaseAuth, cleanEmail, password);
+        const user = await this.syncFirebaseUser(userCred.user);
+        this.notify();
+        return { success: true, user };
+      } catch (err: any) {
+        console.error('[Firebase Auth] Sign in error:', err.code, err.message);
+        let errorMsg = 'Failed to sign in. Please verify your credentials.';
+        if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+          errorMsg = 'Invalid email or password. If you do not have an account, please sign up.';
+        } else if (err.code === 'auth/too-many-requests') {
+          errorMsg = 'Too many failed login attempts. Please reset your password or try again later.';
+        }
+        return { success: false, error: errorMsg };
+      }
     }
 
-    this.setSessionUser(existing);
-    return { success: true, user: existing };
+    // Local demo sandbox fallback
+    await new Promise((res) => setTimeout(res, 300));
+    const demoUser = INITIAL_DEMO_USERS.find((u) => u.email.toLowerCase() === cleanEmail);
+    if (demoUser) {
+      this.currentUser = { ...demoUser, lastLoginAt: new Date().toISOString() };
+      localStorage.setItem(AUTH_USER_KEY, JSON.stringify(this.currentUser));
+      this.notify();
+      return { success: true, user: this.currentUser };
+    }
+
+    const fallbackUser: User = {
+      id: 'user_' + Math.random().toString(36).substring(2, 9),
+      name: cleanEmail.split('@')[0],
+      email: cleanEmail,
+      role: 'creator',
+      tier: 'free',
+      authType: 'local_demo',
+      hasCompletedOnboarding: false,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+    };
+    this.currentUser = fallbackUser;
+    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(fallbackUser));
+    this.notify();
+    return { success: true, user: fallbackUser };
   }
 
   async signUp(name: string, email: string, password?: string): Promise<{ success: boolean; user?: User; error?: string }> {
-    await new Promise((res) => setTimeout(res, 450));
-
     const cleanEmail = email.trim().toLowerCase();
     const cleanName = name.trim();
 
@@ -165,66 +249,109 @@ class AuthService {
     if (!cleanEmail || !cleanEmail.includes('@')) {
       return { success: false, error: 'Please enter a valid email address.' };
     }
-
-    const registered = this.getRegisteredUsers();
-    const alreadyExists = registered.find((u) => u.email.toLowerCase() === cleanEmail);
-
-    if (alreadyExists) {
-      // Sign in instead
-      this.setSessionUser(alreadyExists);
-      return { success: true, user: alreadyExists };
+    if (!password || password.length < 6) {
+      return { success: false, error: 'Password must be at least 6 characters.' };
     }
 
+    // Real Firebase Auth user registration
+    if (isFirebaseAvailable && firebaseAuth) {
+      try {
+        const userCred = await createUserWithEmailAndPassword(firebaseAuth, cleanEmail, password);
+        await updateProfile(userCred.user, { displayName: cleanName });
+        const user = await this.syncFirebaseUser(userCred.user);
+        this.notify();
+        return { success: true, user };
+      } catch (err: any) {
+        console.error('[Firebase Auth] Sign up error:', err.code, err.message);
+        let errorMsg = 'Failed to create account.';
+        if (err.code === 'auth/email-already-in-use') {
+          errorMsg = 'An account with this email already exists. Please sign in instead.';
+        } else if (err.code === 'auth/weak-password') {
+          errorMsg = 'The password is too weak. Please use at least 6 characters.';
+        }
+        return { success: false, error: errorMsg };
+      }
+    }
+
+    // Local demo fallback
     const newUser: User = {
-      id: 'user_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now().toString(36),
+      id: 'user_' + Math.random().toString(36).substring(2, 9),
       name: cleanName,
       email: cleanEmail,
       role: 'creator',
       tier: 'free',
+      authType: 'local_demo',
       hasCompletedOnboarding: false,
       createdAt: new Date().toISOString(),
       lastLoginAt: new Date().toISOString(),
     };
-
-    this.saveRegisteredUsers([...registered, newUser]);
-    this.setSessionUser(newUser);
-
+    this.currentUser = newUser;
+    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(newUser));
+    this.notify();
     return { success: true, user: newUser };
   }
 
   async signInWithGoogle(): Promise<{ success: boolean; user?: User; error?: string }> {
-    await new Promise((res) => setTimeout(res, 600));
+    if (isFirebaseAvailable && firebaseAuth) {
+      try {
+        const provider = new GoogleAuthProvider();
+        provider.setCustomParameters({ prompt: 'select_account' });
+        const result = await signInWithPopup(firebaseAuth, provider);
+        const user = await this.syncFirebaseUser(result.user);
+        this.notify();
+        return { success: true, user };
+      } catch (err: any) {
+        console.error('[Firebase Auth] Google Sign-In error:', err.code, err.message);
+        if (err.code === 'auth/popup-closed-by-user') {
+          return { success: false, error: 'Google sign-in was closed before completion.' };
+        }
+        return { success: false, error: err.message || 'Google sign-in failed.' };
+      }
+    }
 
-    // Sign in with Google Creator account
+    // Local demo fallback
     const googleUser: User = {
       id: 'user_google_' + Date.now().toString(36),
       name: 'Google Creator',
       email: 'creator@google.com',
       role: 'creator',
       tier: 'pro',
+      authType: 'local_demo',
       hasCompletedOnboarding: false,
       createdAt: new Date().toISOString(),
       lastLoginAt: new Date().toISOString(),
     };
-
-    const registered = this.getRegisteredUsers();
-    const existing = registered.find((u) => u.email === googleUser.email);
-    if (existing) {
-      this.setSessionUser(existing);
-      return { success: true, user: existing };
-    }
-
-    this.saveRegisteredUsers([...registered, googleUser]);
-    this.setSessionUser(googleUser);
+    this.currentUser = googleUser;
+    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(googleUser));
+    this.notify();
     return { success: true, user: googleUser };
   }
 
   async requestPasswordReset(email: string): Promise<{ success: boolean; message: string }> {
-    await new Promise((res) => setTimeout(res, 400));
     const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return { success: false, message: 'Please enter a valid email address.' };
+    }
+
+    if (isFirebaseAvailable && firebaseAuth) {
+      try {
+        await sendPasswordResetEmail(firebaseAuth, cleanEmail);
+        return {
+          success: true,
+          message: `Official password recovery email dispatched to ${cleanEmail}. Check your inbox.`,
+        };
+      } catch (err: any) {
+        console.error('[Firebase Auth] Password reset error:', err.code, err.message);
+        return {
+          success: false,
+          message: err.message || 'Failed to dispatch password recovery email.',
+        };
+      }
+    }
+
     return {
       success: true,
-      message: `Password reset instructions sent to ${cleanEmail}. Check your inbox or development console.`,
+      message: `Password reset instructions sent to ${cleanEmail}. (Local sandbox simulation).`,
     };
   }
 
@@ -240,20 +367,27 @@ class AuthService {
       },
     };
 
-    const registered = this.getRegisteredUsers().map((u) => (u.id === updatedUser.id ? updatedUser : u));
-    this.saveRegisteredUsers(registered);
-    this.setSessionUser(updatedUser);
+    if (this.currentUser.authType === 'cloud' && isFirebaseAvailable) {
+      await firestoreService.saveUserProfile(updatedUser);
+    }
 
+    this.currentUser = updatedUser;
+    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(updatedUser));
+    this.notify();
     return updatedUser;
   }
 
-  signOut() {
-    this.setSessionUser(null);
-  }
-
-  // Provider transparency helper
-  isFirebaseConfigured(): boolean {
-    return false; // Honest status: Cloud Firebase Auth not provisioned; local secure store active
+  async signOut() {
+    if (isFirebaseAvailable && firebaseAuth) {
+      try {
+        await firebaseSignOut(firebaseAuth);
+      } catch (err) {
+        console.warn('Firebase sign-out error:', err);
+      }
+    }
+    this.currentUser = null;
+    localStorage.removeItem(AUTH_USER_KEY);
+    this.notify();
   }
 }
 

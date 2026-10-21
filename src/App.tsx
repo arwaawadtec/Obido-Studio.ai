@@ -25,12 +25,30 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(auth.getCurrentUser());
   const [currentRoute, setCurrentRoute] = useState<AppRoute>(router.getRoute());
   const [projects, setProjects] = useState<Project[]>(storage.getProjects(auth.getCurrentUser()?.id));
+  const [isLoadingProjects, setIsLoadingProjects] = useState(false);
+  const [projectQueryError, setProjectQueryError] = useState<string | null>(null);
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
 
+  const loadProjects = async (userId?: string) => {
+    setIsLoadingProjects(true);
+    setProjectQueryError(null);
+    try {
+      const list = await storage.queryProjects(userId);
+      setProjects(list);
+    } catch (err: any) {
+      setProjectQueryError(err?.message || 'Failed to query user projects');
+    } finally {
+      setIsLoadingProjects(false);
+    }
+  };
+
   useEffect(() => {
+    // Initial project query
+    loadProjects(auth.getCurrentUser()?.id);
+
     // Subscribe to router
     const unsubRouter = router.subscribe((route) => {
       setCurrentRoute(route);
@@ -40,12 +58,13 @@ export default function App() {
     const unsubAuth = auth.subscribe(() => {
       const user = auth.getCurrentUser();
       setCurrentUser(user);
-      setProjects(storage.getProjects(user?.id));
+      loadProjects(user?.id);
     });
 
     // Subscribe to storage
     const unsubStorage = storage.subscribe(() => {
-      setProjects(storage.getProjects(auth.getCurrentUser()?.id));
+      const user = auth.getCurrentUser();
+      setProjects(storage.getProjects(user?.id));
     });
 
     // Initialize document direction from saved language preference
@@ -128,6 +147,9 @@ export default function App() {
             projects={projects}
             onSelectProject={handleSelectProject}
             onOpenCreateModal={() => setIsCreateModalOpen(true)}
+            isLoading={isLoadingProjects}
+            queryError={projectQueryError}
+            onRetryQuery={() => loadProjects(currentUser?.id)}
           />
         )}
 

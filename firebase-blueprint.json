@@ -1,0 +1,85 @@
+{
+  "entities": {
+    "users": {
+      "title": "User Profile",
+      "description": "User account profile and studio preferences",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "role": { "type": "string", "maxLength": 32 },
+        "tier": { "type": "string", "maxLength": 32 },
+        "hasCompletedOnboarding": { "type": "boolean" },
+        "preferences": { "type": "object" },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "lastLoginAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "email", "name"]
+    },
+    "projects": {
+      "title": "Video Project",
+      "description": "Complete production project record with brief, script, storyboard, and timeline",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 256 },
+        "description": { "type": "string", "maxLength": 1024 },
+        "currentStage": { "type": "string", "maxLength": 64 },
+        "completedStages": { "type": "array" },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 },
+        "isLocalOnly": { "type": "boolean" },
+        "brief": { "type": "object" },
+        "scripts": { "type": "array" },
+        "currentScriptId": { "type": "string", "maxLength": 128 },
+        "scenes": { "type": "array" },
+        "prompts": { "type": "object" },
+        "activePromptVersion": { "type": "object" },
+        "assets": { "type": "array" },
+        "generationJobs": { "type": "array" },
+        "timeline": { "type": "object" },
+        "exportJobs": { "type": "array" },
+        "migratedFromLocal": { "type": "boolean" }
+      },
+      "required": ["id", "userId", "title", "createdAt"]
+    },
+    "assets": {
+      "title": "Media Asset Metadata",
+      "description": "Metadata and Cloud Storage object reference for generated media",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "projectId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 256 },
+        "type": { "type": "string", "maxLength": 32 },
+        "url": { "type": "string", "maxLength": 2048 },
+        "storagePath": { "type": "string", "maxLength": 512 },
+        "filesizeBytes": { "type": "number" },
+        "durationSeconds": { "type": "number" },
+        "dimensions": { "type": "object" },
+        "aspectRatio": { "type": "string", "maxLength": 32 },
+        "format": { "type": "string", "maxLength": 32 },
+        "provider": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "projectId", "userId", "name", "type"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "users",
+      "description": "User profile document identified by Firebase Auth UID"
+    },
+    "/projects/{projectId}": {
+      "schema": "projects",
+      "description": "User video projects isolated by authenticated userId"
+    },
+    "/assets/{assetId}": {
+      "schema": "assets",
+      "description": "Media asset metadata and Cloud Storage reference records"
+    }
+  }
+}

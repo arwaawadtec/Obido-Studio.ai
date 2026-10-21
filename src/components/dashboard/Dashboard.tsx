@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Video,
   Plus,
@@ -14,25 +14,42 @@ import {
   Download,
   Trash2,
   Copy,
-  ExternalLink,
+  Loader2,
+  RefreshCw,
+  CloudUpload,
+  Database,
 } from 'lucide-react';
 import { Project } from '../../types';
 import { storage, TEMPLATES } from '../../services/storage';
+import { auth } from '../../services/auth';
+import { migrationBridge } from '../../services/migrationBridge';
+import { MigrationModal } from './MigrationModal';
 
 interface DashboardProps {
   projects: Project[];
   onSelectProject: (projectId: string) => void;
   onOpenCreateModal: () => void;
+  isLoading?: boolean;
+  queryError?: string | null;
+  onRetryQuery?: () => void;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
   projects,
   onSelectProject,
   onOpenCreateModal,
+  isLoading = false,
+  queryError = null,
+  onRetryQuery,
 }) => {
   const lang = storage.getLanguagePreference();
   const [filterStage, setFilterStage] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
+
+  const [isMigrationModalOpen, setIsMigrationModalOpen] = useState(false);
+  const currentUser = auth.getCurrentUser();
+  const isCloudMode = auth.isFirebaseConfigured() && currentUser?.authType === 'cloud';
+  const pendingLocalProjects = migrationBridge.getPendingProjects();
 
   const activeProjectId = storage.getActiveProjectId();
   const mostRecentProject = projects.find((p) => p.id === activeProjectId) || projects[0];
@@ -117,6 +134,19 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
 
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
+            {isCloudMode && (
+              <button
+                onClick={() => setIsMigrationModalOpen(true)}
+                className="flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-white/10 hover:bg-white/15 rounded-lg border border-white/10 transition-colors whitespace-nowrap"
+              >
+                <CloudUpload className="w-3.5 h-3.5 text-[#38D9F9]" />
+                <span>{lang === 'ar' ? 'ترحيل المشاريع' : 'Cloud Migration'}</span>
+                {pendingLocalProjects.length > 0 && (
+                  <span className="w-2 h-2 rounded-full bg-[#38D9F9]" />
+                )}
+              </button>
+            )}
+
             <button
               onClick={handleImportClick}
               className="flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-white/10 hover:bg-white/15 rounded-lg border border-white/10 transition-colors whitespace-nowrap"
@@ -158,8 +188,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
               {lang === 'ar' ? 'حالة التخزين' : 'Persistence Mode'}
             </span>
             <span className="text-sm font-semibold text-[#38D9F9] flex items-center gap-1">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>{lang === 'ar' ? 'محلي / نموذج أولي' : 'Local Prototype'}</span>
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              <span>
+                {isCloudMode
+                  ? (lang === 'ar' ? 'سحابي (Firestore)' : 'Cloud Firestore')
+                  : (lang === 'ar' ? 'محلي / نموذج أولي' : 'Local Sandbox')}
+              </span>
             </span>
           </div>
           <div>
@@ -253,6 +287,36 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
       </section>
 
+      {/* Cloud Migration Callout Banner */}
+      {isCloudMode && pendingLocalProjects.length > 0 && (
+        <div className="p-4 bg-gradient-to-r from-[#635BFF]/10 via-[#38D9F9]/10 to-transparent border border-[#635BFF]/20 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-lg bg-[#635BFF] text-white flex items-center justify-center shrink-0">
+              <CloudUpload className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="text-xs font-bold text-[#11152B]">
+                {lang === 'ar'
+                  ? `تم اكتشاف ${pendingLocalProjects.length} مشروعاً محلياً جاهزاً للترحيل السحابي`
+                  : `${pendingLocalProjects.length} local project${pendingLocalProjects.length > 1 ? 's' : ''} ready to migrate to cloud`}
+              </h4>
+              <p className="text-[11px] text-[#62677A] mt-0.5">
+                {lang === 'ar'
+                  ? 'قم بحفظ مشاريعك في Firebase Firestore مع حماية الوصول لكل مستخدم.'
+                  : 'Sync your local drafts to Firebase Firestore and Cloud Object Storage without losing your local backups.'}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setIsMigrationModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#635BFF] hover:bg-[#5249ea] rounded-lg shadow-xs transition-colors self-start sm:self-auto shrink-0 cursor-pointer"
+          >
+            <span>{lang === 'ar' ? 'بدء الترحيل' : 'Migrate to Cloud'}</span>
+            <ArrowRight className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
       {/* Projects Section */}
       <section className="space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -293,27 +357,96 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
 
-        {/* Projects Grid */}
-        {filteredProjects.length === 0 ? (
+        {/* Loading State */}
+        {isLoading && (
           <div className="p-12 text-center bg-white border border-[#E3E6EF] rounded-xl space-y-3">
-            <Film className="w-10 h-10 text-[#62677A]/40 mx-auto" />
+            <Loader2 className="w-8 h-8 text-[#635BFF] animate-spin mx-auto" />
+            <p className="text-xs text-[#62677A]">
+              {lang === 'ar' ? 'جاري تحميل المشاريع...' : 'Loading your video projects...'}
+            </p>
+          </div>
+        )}
+
+        {/* Distinct Query Error State with Retry - Never confused with empty state */}
+        {!isLoading && queryError && (
+          <div className="p-6 sm:p-8 bg-red-50/80 border border-red-200 rounded-xl space-y-3 sm:space-y-0 sm:flex sm:items-center sm:justify-between">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+              <div>
+                <h3 className="text-sm font-bold text-red-900">
+                  {lang === 'ar' ? 'فشل تحميل المشاريع' : 'Unable to load projects'}
+                </h3>
+                <p className="text-xs text-red-700 mt-0.5">
+                  {queryError}
+                </p>
+              </div>
+            </div>
+            {onRetryQuery && (
+              <button
+                onClick={onRetryQuery}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors shrink-0 shadow-xs cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>{lang === 'ar' ? 'إعادة المحاولة' : 'Retry'}</span>
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Empty State - Rendered only when project query succeeds and returns zero projects */}
+        {!isLoading && !queryError && projects.length === 0 && (
+          <div className="p-12 sm:p-16 text-center bg-white border border-[#E3E6EF] rounded-2xl shadow-xs space-y-4 max-w-2xl mx-auto">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-[#635BFF]/10 flex items-center justify-center text-[#635BFF]">
+              <Video className="w-7 h-7 stroke-[1.8]" />
+            </div>
+            <div className="space-y-1.5">
+              <h3 className="text-lg font-bold text-[#11152B] font-display">
+                {lang === 'ar' ? 'يبدأ أول فيديو لك من هنا.' : 'Your first video starts here.'}
+              </h3>
+              <p className="text-xs sm:text-sm text-[#62677A] max-w-md mx-auto leading-relaxed">
+                {lang === 'ar'
+                  ? 'لم تقم بإنشاء أي مقاطع فيديو بعد. حوّل فكرتك إلى فيديو باستخدام سير عمل الإنتاج الإرشادي في استوديو أوبيدو.'
+                  : "You haven't created any videos yet. Turn your idea into a video with Obido Studio's guided production workflow."}
+              </p>
+            </div>
+            <div className="pt-2">
+              <button
+                onClick={onOpenCreateModal}
+                className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-bold text-white bg-[#635BFF] hover:bg-[#5249ea] rounded-lg shadow-sm transition-all cursor-pointer"
+              >
+                <Plus className="w-4 h-4 stroke-[2.5]" />
+                <span>{lang === 'ar' ? 'إنشاء فيديو' : 'Create Video'}</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Filtered Empty State - When user has projects, but search query or stage filter matches 0 */}
+        {!isLoading && !queryError && projects.length > 0 && filteredProjects.length === 0 && (
+          <div className="p-10 text-center bg-white border border-[#E3E6EF] rounded-xl space-y-3">
+            <Film className="w-8 h-8 text-[#62677A]/40 mx-auto" />
             <h3 className="text-sm font-semibold text-[#11152B]">
-              {lang === 'ar' ? 'لا توجد مشاريع تطابق البحث' : 'No projects found'}
+              {lang === 'ar' ? 'لا توجد مشاريع تطابق الفلتر' : 'No projects match your filter'}
             </h3>
             <p className="text-xs text-[#62677A] max-w-sm mx-auto">
               {lang === 'ar'
-                ? 'ابدأ بإنشاء أول مشروع فيديو لك لتحويل أفكارك إلى مشاهد حقيقية'
-                : 'Create a new project or select one of the starter blueprints above to begin.'}
+                ? 'جرّب تعديل مصطلح البحث أو تصفية المراحل لإظهار مشاريعك'
+                : 'Try adjusting your search query or selecting "All Stages" to view matching projects.'}
             </p>
             <button
-              onClick={onOpenCreateModal}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#635BFF] rounded-lg hover:bg-[#5249ea] transition-colors"
+              onClick={() => {
+                setSearchQuery('');
+                setFilterStage('all');
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-[#635BFF] bg-[#635BFF]/10 hover:bg-[#635BFF]/15 rounded-lg transition-colors cursor-pointer"
             >
-              <Plus className="w-3.5 h-3.5" />
-              <span>{lang === 'ar' ? 'إنشاء فيديو جديد' : 'Create New Video'}</span>
+              <span>{lang === 'ar' ? 'إعادة ضبط الفلتر' : 'Clear Filter'}</span>
             </button>
           </div>
-        ) : (
+        )}
+
+        {/* Projects Grid */}
+        {!isLoading && !queryError && filteredProjects.length > 0 && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredProjects.map((project) => {
               const scenesCount = project.scenes?.length || 0;
@@ -383,6 +516,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
         )}
       </section>
+
+      {/* Migration Modal */}
+      <MigrationModal
+        isOpen={isMigrationModalOpen}
+        onClose={() => setIsMigrationModalOpen(false)}
+        onMigrationComplete={() => {
+          onRetryQuery?.();
+        }}
+      />
     </div>
   );
 };

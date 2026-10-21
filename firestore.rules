@@ -1,0 +1,121 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all unknown paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Users Collection
+    // Document ID is the Firebase Auth UID
+    match /users/{userId} {
+      function isValidUser(data) {
+        return data.keys().hasAll(['id', 'email', 'name']) &&
+          data.id is string && data.id.size() <= 128 &&
+          data.email is string && data.email.size() <= 256 &&
+          data.name is string && data.name.size() <= 128 &&
+          data.id == userId;
+      }
+
+      allow get: if isOwner(userId);
+      allow list: if false; // Users cannot list other user profiles
+
+      allow create: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUser(incoming()) &&
+        incoming().id == request.auth.uid;
+
+      allow update: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUser(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().email == existing().email;
+
+      allow delete: if isOwner(userId);
+    }
+
+    // Projects Collection
+    match /projects/{projectId} {
+      function isValidProject(data) {
+        return data.keys().hasAll(['id', 'userId', 'title', 'createdAt']) &&
+          data.id is string && data.id.size() <= 128 &&
+          data.userId is string && data.userId.size() <= 128 &&
+          data.title is string && data.title.size() <= 256 &&
+          data.userId == request.auth.uid;
+      }
+
+      allow get: if isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+        isValidId(projectId) &&
+        isValidProject(incoming()) &&
+        incoming().userId == request.auth.uid;
+
+      allow update: if isSignedIn() &&
+        isValidId(projectId) &&
+        existing().userId == request.auth.uid &&
+        isValidProject(incoming()) &&
+        incoming().userId == existing().userId &&
+        incoming().id == existing().id;
+
+      allow delete: if isSignedIn() &&
+        isValidId(projectId) &&
+        existing().userId == request.auth.uid;
+    }
+
+    // Media Assets Metadata Collection
+    match /assets/{assetId} {
+      function isValidAsset(data) {
+        return data.keys().hasAll(['id', 'projectId', 'userId', 'name', 'type']) &&
+          data.id is string && data.id.size() <= 128 &&
+          data.projectId is string && data.projectId.size() <= 128 &&
+          data.userId is string && data.userId.size() <= 128 &&
+          data.name is string && data.name.size() <= 256 &&
+          data.type is string && data.type.size() <= 32 &&
+          data.userId == request.auth.uid;
+      }
+
+      allow get: if isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+        isValidId(assetId) &&
+        isValidAsset(incoming()) &&
+        incoming().userId == request.auth.uid;
+
+      allow update: if isSignedIn() &&
+        isValidId(assetId) &&
+        existing().userId == request.auth.uid &&
+        isValidAsset(incoming()) &&
+        incoming().userId == existing().userId &&
+        incoming().id == existing().id;
+
+      allow delete: if isSignedIn() &&
+        isValidId(assetId) &&
+        existing().userId == request.auth.uid;
+    }
+  }
+}

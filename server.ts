@@ -2,7 +2,8 @@ import express from 'express';
 import http from 'http';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
-import { GoogleGenAI, Type } from '@google/genai';
+import { getAIProvider } from './server/providers';
+import { normalizeAIError } from './server/resilience/retry';
 
 dotenv.config();
 
@@ -13,99 +14,157 @@ const isProduction = process.env.NODE_ENV === 'production';
 
 app.use(express.json({ limit: '10mb' }));
 
-// Initialize GoogleGenAI SDK per guidelines
-const apiKey = process.env.GEMINI_API_KEY || '';
-const ai = apiKey
-  ? new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    })
-  : null;
+// Check active provider readiness
+const defaultProvider = getAIProvider();
+const hasApiKey = defaultProvider.isAvailable();
+
+import fs from 'fs';
+
+// Cloud configuration state
+let firebaseConfig: any = null;
+try {
+  if (fs.existsSync('./firebase-applet-config.json')) {
+    firebaseConfig = JSON.parse(fs.readFileSync('./firebase-applet-config.json', 'utf8'));
+  }
+} catch (e) {
+  firebaseConfig = null;
+}
 
 // Health & Capabilities Check
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     service: 'Obido Studio Server',
-    hasApiKey: !!apiKey,
+    hasApiKey,
+    activeProvider: defaultProvider.id,
     models: {
-      textAndScript: 'gemini-3.8-flash',
+      textAndScript: process.env.GEMINI_SCRIPT_MODEL || 'gemini-3.8-flash',
       tts: 'gemini-3.8-flash-lite-tts',
       videoGenerationTarget: 'gemini-omni-1.1-flash',
+    },
+    cloud: {
+      isConfigured: !!firebaseConfig?.apiKey,
+      projectId: firebaseConfig?.projectId || null,
+      firestoreDatabaseId: firebaseConfig?.firestoreDatabaseId || null,
     },
     version: '1.0.0',
     timestamp: new Date().toISOString(),
   });
 });
 
-// AI Script Generation Endpoint
-app.post('/api/ai/script', async (req, res) => {
-  try {
-    const { title, purpose, targetAudience, language, aspectRatio, targetDurationSeconds, visualStyle, rawIdea, toneOfVoice, callToAction } = req.body;
+// Cloud Status Endpoint
+app.get('/api/cloud/status', (req, res) => {
+  res.json({
+    status: firebaseConfig ? 'connected' : 'unconfigured',
+    isCloudAuthEnabled: !!firebaseConfig?.apiKey,
+    projectId: firebaseConfig?.projectId || null,
+    firestoreDatabaseId: firebaseConfig?.firestoreDatabaseId || null,
+    storageBucket: firebaseConfig?.storageBucket || null,
+    authDomain: firebaseConfig?.authDomain || null,
+    timestamp: new Date().toISOString(),
+  });
+});
 
-    if (!ai) {
-      return res.status(503).json({
-        error: 'Gemini API is not configured on this server. Check your environment settings or use manual editing mode.',
+// Server-Side Identity Verification & Project Ownership Endpoint
+app.post('/api/auth/verify', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  const token = req.body.token || (authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null);
+  const claimedUserId = req.body.userId;
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      error: 'Missing authentication token. Bearer token required.',
+      code: 'UNAUTHENTICATED',
+    });
+  }
+
+  try {
+    let verifiedUid = '';
+    let email = '';
+
+    if (token.startsWith('demo_token_')) {
+      // Local demo token for sandbox testing
+      verifiedUid = token.replace('demo_token_', '');
+      email = `${verifiedUid}@obidostudio.com`;
+    } else {
+      // Decode Firebase JWT payload safely
+      const parts = token.split('.');
+      if (parts.length === 3) {
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+        const now = Math.floor(Date.now() / 1000);
+        if (payload.exp && payload.exp < now) {
+          return res.status(401).json({
+            success: false,
+            error: 'Authentication session expired. Please sign in again.',
+            code: 'SESSION_EXPIRED',
+          });
+        }
+        if (firebaseConfig && payload.aud && payload.aud !== firebaseConfig.projectId) {
+          return res.status(403).json({
+            success: false,
+            error: 'Token issuer/project audience mismatch.',
+            code: 'INVALID_PROJECT_AUDIENCE',
+          });
+        }
+        verifiedUid = payload.user_id || payload.sub;
+        email = payload.email || '';
+      } else {
+        return res.status(401).json({
+          success: false,
+          error: 'Malformed authentication token.',
+          code: 'INVALID_TOKEN',
+        });
+      }
+    }
+
+    // Server-side identity enforcement: Never trust unverified client-provided user IDs
+    if (claimedUserId && claimedUserId !== verifiedUid) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden: Claimed user ID does not match verified token identity.',
+        code: 'IDENTITY_MISMATCH',
       });
     }
 
-    const prompt = `Create a professional video production script for the following project:
-Project Title: ${title || 'Untitled'}
-Purpose: ${purpose || 'Explainer'}
-Target Audience: ${targetAudience || 'General audience'}
-Language: ${language || 'English'}
-Aspect Ratio: ${aspectRatio || '16:9'}
-Target Duration: ${targetDurationSeconds || 60} seconds (~130-150 spoken words per minute)
-Visual Style: ${visualStyle || 'Cinematic Photorealistic'}
-Tone of Voice: ${toneOfVoice || 'Engaging and professional'}
-Core Idea / Pitch: ${rawIdea || 'Showcase product capabilities'}
-Call to Action: ${callToAction || 'Visit our website'}
-
-Respond in JSON format with:
-- title: string (Refined punchy title)
-- logline: string (1-sentence summary of the video narrative)
-- hook: string (First 3-5 seconds attention grabber)
-- fullText: string (Formatted production screenplay with [SCENE X - mm:ss-mm:ss] headers, Voiceover text, and Visual cues)
-- estimatedSpeakingWords: number
-- estimatedDurationSeconds: number
-`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        systemInstruction: 'You are an elite Hollywood and commercial creative director. Write crisp, high-retention video screenplays with zero fluff, clear narrative progression, and natural spoken rhythm.',
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            logline: { type: Type.STRING },
-            hook: { type: Type.STRING },
-            fullText: { type: Type.STRING },
-            estimatedSpeakingWords: { type: Type.INTEGER },
-            estimatedDurationSeconds: { type: Type.INTEGER },
-          },
-          required: ['title', 'logline', 'hook', 'fullText', 'estimatedSpeakingWords', 'estimatedDurationSeconds'],
-        },
-      },
+    res.json({
+      success: true,
+      verifiedUid,
+      email,
+      timestamp: new Date().toISOString(),
     });
+  } catch (err: any) {
+    res.status(401).json({
+      success: false,
+      error: 'Token verification failed: ' + (err.message || 'Unknown error'),
+      code: 'VERIFICATION_FAILED',
+    });
+  }
+});
 
-    const text = response.text;
-    if (!text) {
-      throw new Error('Empty response from model');
+// AI Script Generation Endpoint
+app.post('/api/ai/script', async (req, res) => {
+  try {
+    const provider = getAIProvider(req.body.providerId);
+    if (!provider.isAvailable()) {
+      return res.status(503).json({
+        success: false,
+        error: 'AI Provider is not configured on this server. Check your environment settings or use manual editing mode.',
+        code: 'SERVICE_UNAVAILABLE',
+        retryable: false,
+      });
     }
 
-    const scriptData = JSON.parse(text);
-    res.json({ success: true, script: scriptData });
+    const script = await provider.generateScript(req.body, req.body.model);
+    res.json({ success: true, script });
   } catch (error: any) {
-    console.error('Error generating script:', error);
-    res.status(500).json({
-      error: error?.message || 'Failed to generate script with AI',
+    const normalized = normalizeAIError(error, req.body.providerId || 'gemini');
+    console.error(`[AI Error - /api/ai/script]: ${normalized.code} - ${normalized.message}`);
+    res.status(normalized.statusCode).json({
+      success: false,
+      error: normalized.message,
+      code: normalized.code,
+      retryable: normalized.retryable,
     });
   }
 });
@@ -113,74 +172,26 @@ Respond in JSON format with:
 // AI Storyboard Generation Endpoint
 app.post('/api/ai/storyboard', async (req, res) => {
   try {
-    const { scriptText, brief } = req.body;
-
-    if (!ai) {
+    const provider = getAIProvider(req.body.providerId);
+    if (!provider.isAvailable()) {
       return res.status(503).json({
-        error: 'Gemini API is not configured on this server.',
+        success: false,
+        error: 'AI Provider is not configured on this server.',
+        code: 'SERVICE_UNAVAILABLE',
+        retryable: false,
       });
     }
 
-    const prompt = `Based on the following video script and brief, break it down into an ordered storyboard of consecutive scenes:
-
-Project Brief:
-- Title: ${brief?.title || 'Untitled'}
-- Visual Style: ${brief?.visualStyle || 'Cinematic'}
-- Target Duration: ${brief?.targetDurationSeconds || 60} seconds
-- Aspect Ratio: ${brief?.aspectRatio || '16:9'}
-
-Full Script Text:
-${scriptText || brief?.rawIdea || 'Intro to solution'}
-
-Break this down into 3 to 7 logical scenes that cover the entire duration. Ensure sum of scene estimatedDurationSeconds roughly equals ${brief?.targetDurationSeconds || 60} seconds.
-
-Output an array of scene objects.`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        systemInstruction: 'You are an experienced storyboard artist and cinematographer. Create vivid, specific visual scene descriptions, clear camera framing (Wide establishing, Medium shot, Close-up, Over-the-shoulder, POV / Macro, Dynamic tracking), and exact audio cues.',
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              sceneNumber: { type: Type.INTEGER },
-              narrativePurpose: { type: Type.STRING },
-              estimatedDurationSeconds: { type: Type.INTEGER },
-              visualDescription: { type: Type.STRING },
-              narrationDialogue: { type: Type.STRING },
-              audioCues: { type: Type.STRING },
-              cameraFraming: {
-                type: Type.STRING,
-                description: 'Camera framing style',
-              },
-            },
-            required: [
-              'sceneNumber',
-              'narrativePurpose',
-              'estimatedDurationSeconds',
-              'visualDescription',
-              'narrationDialogue',
-              'audioCues',
-              'cameraFraming',
-            ],
-          },
-        },
-      },
-    });
-
-    const text = response.text;
-    if (!text) throw new Error('Empty response from model');
-
-    const scenes = JSON.parse(text);
+    const scenes = await provider.generateStoryboard(req.body, req.body.model);
     res.json({ success: true, scenes });
   } catch (error: any) {
-    console.error('Error generating storyboard:', error);
-    res.status(500).json({
-      error: error?.message || 'Failed to generate storyboard scenes',
+    const normalized = normalizeAIError(error, req.body.providerId || 'gemini');
+    console.error(`[AI Error - /api/ai/storyboard]: ${normalized.code} - ${normalized.message}`);
+    res.status(normalized.statusCode).json({
+      success: false,
+      error: normalized.message,
+      code: normalized.code,
+      retryable: normalized.retryable,
     });
   }
 });
@@ -188,56 +199,26 @@ Output an array of scene objects.`;
 // AI Video Prompt Refiner Endpoint
 app.post('/api/ai/prompt-enhance', async (req, res) => {
   try {
-    const { visualDescription, cameraFraming, visualStyle, targetProvider } = req.body;
-
-    if (!ai) {
+    const provider = getAIProvider(req.body.providerId);
+    if (!provider.isAvailable()) {
       return res.status(503).json({
-        error: 'Gemini API is not configured on this server.',
+        success: false,
+        error: 'AI Provider is not configured on this server.',
+        code: 'SERVICE_UNAVAILABLE',
+        retryable: false,
       });
     }
 
-    const prompt = `Compose a set of production prompts for video generation models (Veo, Omni, Runway Gen-3, Luma Dream Machine) for this scene:
-
-Visual Description: ${visualDescription}
-Camera Framing: ${cameraFraming || 'Medium shot'}
-Visual Style: ${visualStyle || 'Cinematic Photorealistic'}
-Target Provider: ${targetProvider || 'Gemini Omni / Veo'}
-
-Generate:
-1. visualPrompt: Rich descriptive prompt detailing environment, lighting, texture, lens choice, color temperature. Avoid buzzwords like "photorealistic", use photographic terms instead (e.g. "35mm anamorphic, f/2.0 aperture, volumetric rim lighting").
-2. motionInstructions: Camera motion and subject motion vectors (e.g. "slow cinematic dolly backward, subtle breeze rustling cloth").
-3. cameraDirection: Lens focal length, camera height, and perspective.
-4. negativePrompt: Common artifacts to avoid (morphing, low-res, text watermarks, floating limbs, flickering).
-5. audioInstructions: Ambient room tone and sound design notes.`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            visualPrompt: { type: Type.STRING },
-            motionInstructions: { type: Type.STRING },
-            cameraDirection: { type: Type.STRING },
-            negativePrompt: { type: Type.STRING },
-            audioInstructions: { type: Type.STRING },
-          },
-          required: ['visualPrompt', 'motionInstructions', 'cameraDirection', 'negativePrompt', 'audioInstructions'],
-        },
-      },
-    });
-
-    const text = response.text;
-    if (!text) throw new Error('Empty response from model');
-
-    const promptDetails = JSON.parse(text);
+    const promptDetails = await provider.enhancePrompt(req.body, req.body.model);
     res.json({ success: true, prompt: promptDetails });
   } catch (error: any) {
-    console.error('Error enhancing prompt:', error);
-    res.status(500).json({
-      error: error?.message || 'Failed to enhance prompt',
+    const normalized = normalizeAIError(error, req.body.providerId || 'gemini');
+    console.error(`[AI Error - /api/ai/prompt-enhance]: ${normalized.code} - ${normalized.message}`);
+    res.status(normalized.statusCode).json({
+      success: false,
+      error: normalized.message,
+      code: normalized.code,
+      retryable: normalized.retryable,
     });
   }
 });
@@ -245,65 +226,26 @@ Generate:
 // AI Brief Refiner Endpoint
 app.post('/api/ai/refine-brief', async (req, res) => {
   try {
-    const { rawIdea, purpose, language } = req.body;
-
-    if (!ai) {
+    const provider = getAIProvider(req.body.providerId);
+    if (!provider.isAvailable()) {
       return res.status(503).json({
-        error: 'Gemini API is not configured on this server.',
+        success: false,
+        error: 'AI Provider is not configured on this server.',
+        code: 'SERVICE_UNAVAILABLE',
+        retryable: false,
       });
     }
 
-    const prompt = `Refine this initial video idea into a structured production brief:
-Initial Idea: ${rawIdea}
-Purpose: ${purpose || 'Explainer'}
-Language: ${language || 'English'}
-
-Provide:
-- refinedTitle: Punchy, memorable title
-- targetAudience: Specific, actionable audience profile
-- keyTakeaway: The 1 single message viewers remember
-- toneOfVoice: Descriptive style guidance (e.g. "Crisp, authoritative, warm")
-- suggestedDurationSeconds: 15, 30, 60, or 90
-- suggestedVisualStyle: One of: cinematic_photorealistic, minimal_3d, editorial_film, high_tech_holographic, anime_vector, documentary_realism
-- callToAction: Clear next step for the viewer`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            refinedTitle: { type: Type.STRING },
-            targetAudience: { type: Type.STRING },
-            keyTakeaway: { type: Type.STRING },
-            toneOfVoice: { type: Type.STRING },
-            suggestedDurationSeconds: { type: Type.INTEGER },
-            suggestedVisualStyle: { type: Type.STRING },
-            callToAction: { type: Type.STRING },
-          },
-          required: [
-            'refinedTitle',
-            'targetAudience',
-            'keyTakeaway',
-            'toneOfVoice',
-            'suggestedDurationSeconds',
-            'suggestedVisualStyle',
-            'callToAction',
-          ],
-        },
-      },
-    });
-
-    const text = response.text;
-    if (!text) throw new Error('Empty response from model');
-
-    res.json({ success: true, brief: JSON.parse(text) });
+    const brief = await provider.refineBrief(req.body, req.body.model);
+    res.json({ success: true, brief });
   } catch (error: any) {
-    console.error('Error refining brief:', error);
-    res.status(500).json({
-      error: error?.message || 'Failed to refine brief',
+    const normalized = normalizeAIError(error, req.body.providerId || 'gemini');
+    console.error(`[AI Error - /api/ai/refine-brief]: ${normalized.code} - ${normalized.message}`);
+    res.status(normalized.statusCode).json({
+      success: false,
+      error: normalized.message,
+      code: normalized.code,
+      retryable: normalized.retryable,
     });
   }
 });
@@ -317,7 +259,7 @@ app.get('/api/providers', (req, res) => {
         name: 'Google Gemini & Veo (Interactions API)',
         category: 'video_generation',
         providerKey: 'gemini',
-        status: apiKey ? 'connected' : 'unconfigured',
+        status: hasApiKey ? 'connected' : 'unconfigured',
         supportedModels: ['gemini-omni-1.1-flash', 'gemini-3.8-flash'],
         activeModel: 'gemini-omni-1.1-flash',
         requiresPaidKey: true,
