@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { Project, PromptVersion, Scene } from '../../types';
 import { storage } from '../../services/storage';
+import { authenticatedFetch } from '../../services/apiClient';
 
 interface PromptsStageProps {
   project: Project;
@@ -96,7 +97,7 @@ export const PromptsStage: React.FC<PromptsStageProps> = ({ project, onProceedTo
     setFeedback(null);
 
     try {
-      const res = await fetch('/api/ai/prompt-enhance', {
+      const res = await authenticatedFetch('/api/ai/prompt-enhance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

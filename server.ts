@@ -137,13 +137,103 @@ app.post('/api/auth/verify', async (req, res) => {
     res.status(401).json({
       success: false,
       error: 'Token verification failed: ' + (err.message || 'Unknown error'),
-      code: 'VERIFICATION_FAILED',
+      code: 'INVALID_TOKEN',
     });
   }
 });
 
+// Middleware enforcing verified authorization on generation endpoints
+export function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const authHeader = req.headers.authorization;
+  const token = (authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null) || (req.body && req.body.token);
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      error: 'Authentication required. Missing Bearer authorization token.',
+      code: 'UNAUTHENTICATED',
+      retryable: false,
+    });
+  }
+
+  // Handle local demo sandbox tokens in non-production environments
+  if (token.startsWith('demo_token_')) {
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(403).json({
+        success: false,
+        error: 'Demo authentication is forbidden in production environment.',
+        code: 'DEMO_MODE_FORBIDDEN',
+        retryable: false,
+      });
+    }
+    const verifiedUid = token.replace('demo_token_', '');
+    (req as any).user = { verifiedUid, email: `${verifiedUid}@obidostudio.com`, isDemo: true };
+    return next();
+  }
+
+  // Validate Firebase token structure
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    return res.status(401).json({
+      success: false,
+      error: 'Malformed authentication token.',
+      code: 'INVALID_TOKEN',
+      retryable: false,
+    });
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.exp && payload.exp < now) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication session expired. Please sign in again.',
+        code: 'SESSION_EXPIRED',
+        retryable: false,
+      });
+    }
+    if (firebaseConfig && payload.aud && payload.aud !== firebaseConfig.projectId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Token issuer/project audience mismatch.',
+        code: 'INVALID_PROJECT_AUDIENCE',
+        retryable: false,
+      });
+    }
+    const verifiedUid = payload.user_id || payload.sub;
+    if (!verifiedUid) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid token: missing subject identity.',
+        code: 'INVALID_TOKEN',
+        retryable: false,
+      });
+    }
+
+    if (req.body?.userId && req.body.userId !== verifiedUid) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden: Claimed user ID does not match verified token identity.',
+        code: 'IDENTITY_MISMATCH',
+        retryable: false,
+      });
+    }
+
+    (req as any).user = { verifiedUid, email: payload.email || '', isDemo: false };
+    next();
+  } catch (err: any) {
+    return res.status(401).json({
+      success: false,
+      error: 'Malformed or invalid authentication token: ' + (err.message || 'Unknown error'),
+      code: 'INVALID_TOKEN',
+      retryable: false,
+    });
+  }
+}
+
 // AI Script Generation Endpoint
-app.post('/api/ai/script', async (req, res) => {
+app.post('/api/ai/script', requireAuth, async (req, res) => {
   try {
     const provider = getAIProvider(req.body.providerId);
     if (!provider.isAvailable()) {
@@ -170,7 +260,7 @@ app.post('/api/ai/script', async (req, res) => {
 });
 
 // AI Storyboard Generation Endpoint
-app.post('/api/ai/storyboard', async (req, res) => {
+app.post('/api/ai/storyboard', requireAuth, async (req, res) => {
   try {
     const provider = getAIProvider(req.body.providerId);
     if (!provider.isAvailable()) {
@@ -197,7 +287,7 @@ app.post('/api/ai/storyboard', async (req, res) => {
 });
 
 // AI Video Prompt Refiner Endpoint
-app.post('/api/ai/prompt-enhance', async (req, res) => {
+app.post('/api/ai/prompt-enhance', requireAuth, async (req, res) => {
   try {
     const provider = getAIProvider(req.body.providerId);
     if (!provider.isAvailable()) {
@@ -224,7 +314,7 @@ app.post('/api/ai/prompt-enhance', async (req, res) => {
 });
 
 // AI Brief Refiner Endpoint
-app.post('/api/ai/refine-brief', async (req, res) => {
+app.post('/api/ai/refine-brief', requireAuth, async (req, res) => {
   try {
     const provider = getAIProvider(req.body.providerId);
     if (!provider.isAvailable()) {

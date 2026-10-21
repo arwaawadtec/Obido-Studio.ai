@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Sparkles, Wand2, ArrowRight, Save, Check, Loader2, Monitor, Smartphone, Square } from 'lucide-react';
 import { Project, AspectRatio, VideoPurpose, VisualStyle } from '../../types';
 import { storage } from '../../services/storage';
+import { authenticatedFetch } from '../../services/apiClient';
 
 interface BriefStageProps {
   project: Project;
@@ -70,7 +71,7 @@ export const BriefStage: React.FC<BriefStageProps> = ({ project, onProceedToScri
     setRefineFeedback(null);
 
     try {
-      const res = await fetch('/api/ai/refine-brief', {
+      const res = await authenticatedFetch('/api/ai/refine-brief', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

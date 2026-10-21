@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Project, Scene } from '../../types';
 import { storage } from '../../services/storage';
+import { authenticatedFetch } from '../../services/apiClient';
 
 interface StoryboardStageProps {
   project: Project;
@@ -54,7 +55,7 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
     setFeedback(null);
 
     try {
-      const res = await fetch('/api/ai/storyboard', {
+      const res = await authenticatedFetch('/api/ai/storyboard', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

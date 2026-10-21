@@ -456,6 +456,10 @@ class StorageService {
 
   private init() {
     try {
+      if (typeof localStorage === 'undefined') {
+        this.projects = SAMPLE_PROJECTS;
+        return;
+      }
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
         this.projects = JSON.parse(stored);
@@ -463,13 +467,16 @@ class StorageService {
         this.projects = SAMPLE_PROJECTS;
         this.persist();
       }
-    } catch (e) {
-      console.warn('StorageService: failed to read localStorage, using in-memory', e);
+    } catch {
       this.projects = SAMPLE_PROJECTS;
     }
   }
 
   private persist() {
+    if (typeof localStorage === 'undefined') {
+      this.notify();
+      return;
+    }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.projects));
     } catch (e) {

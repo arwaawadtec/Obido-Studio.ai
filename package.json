@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx test/provider-resilience.test.ts && tsx test/cloud-foundation.test.ts"
+    "test": "tsx test/provider-resilience.test.ts && tsx test/cloud-foundation.test.ts && tsx test/cloud-integration-verification.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

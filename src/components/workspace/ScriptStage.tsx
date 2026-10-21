@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { Project, ScriptVersion } from '../../types';
 import { storage } from '../../services/storage';
+import { authenticatedFetch } from '../../services/apiClient';
 
 interface ScriptStageProps {
   project: Project;
@@ -64,7 +65,7 @@ export const ScriptStage: React.FC<ScriptStageProps> = ({ project, onProceedToSt
     setSuccessMsg(null);
 
     try {
-      const res = await fetch('/api/ai/script', {
+      const res = await authenticatedFetch('/api/ai/script', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
