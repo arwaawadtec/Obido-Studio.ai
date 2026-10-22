@@ -5,6 +5,9 @@ import {
   GoogleAuthProvider,
   signOut as firebaseSignOut,
   sendPasswordResetEmail,
+  verifyPasswordResetCode,
+  confirmPasswordReset,
+  ActionCodeSettings,
   updateProfile,
   onAuthStateChanged,
   User as FirebaseUser,
@@ -12,12 +15,47 @@ import {
 import { firebaseAuth, isFirebaseAvailable } from './firebase';
 import { firestoreService } from './firestoreService';
 import { User, UserPreferences } from '../types';
+import { AppError, AuthActionResult } from '../types/error';
+import { mapFirebaseError, createAppError } from './errorService';
+import { storage } from './storage';
 
 const AUTH_USER_KEY = 'obido_studio_auth_user_v1';
 const REGISTERED_USERS_KEY = 'obido_studio_registered_users_v1';
 
+// In-memory fallback map when running under Node test environment
+const memoryStorage = new Map<string, string>();
+
+const safeStorage = {
+  getItem: (key: string): string | null => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        return window.localStorage.getItem(key);
+      }
+    } catch {}
+    return memoryStorage.get(key) || null;
+  },
+  setItem: (key: string, value: string): void => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(key, value);
+        return;
+      }
+    } catch {}
+    memoryStorage.set(key, value);
+  },
+  removeItem: (key: string): void => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.removeItem(key);
+        return;
+      }
+    } catch {}
+    memoryStorage.delete(key);
+  },
+};
+
 // Seed demo users for local fallback / testing
-const INITIAL_DEMO_USERS: User[] = [
+export const INITIAL_DEMO_USERS: User[] = [
   {
     id: 'user_demo_creator',
     name: 'Sarah Chen',
@@ -62,6 +100,42 @@ class AuthService {
   }
 
   private init() {
+    // 1. Synchronously restore session user from safeStorage to prevent route flicker on startup
+    try {
+      const sessionUser = safeStorage.getItem(AUTH_USER_KEY);
+      if (sessionUser) {
+        this.currentUser = JSON.parse(sessionUser);
+      }
+    } catch {
+      this.currentUser = null;
+    }
+
+    // 2. Multi-tab synchronization: listen for storage events from other browser tabs
+    if (typeof window !== 'undefined') {
+      window.addEventListener('storage', (event: StorageEvent) => {
+        if (event.key === AUTH_USER_KEY) {
+          if (!event.newValue) {
+            // Another tab signed out: synchronize state immediately
+            if (this.currentUser) {
+              const prevId = this.currentUser.id;
+              this.currentUser = null;
+              try {
+                storage.handleUserSignOut(prevId);
+              } catch {}
+              this.notify();
+            }
+          } else {
+            // Another tab signed in: adopt new user session
+            try {
+              const newUser = JSON.parse(event.newValue);
+              this.currentUser = newUser;
+              this.notify();
+            } catch {}
+          }
+        }
+      });
+    }
+
     if (isFirebaseAvailable && firebaseAuth) {
       // Real Firebase Auth listener
       onAuthStateChanged(firebaseAuth, async (fbUser: FirebaseUser | null) => {
@@ -69,7 +143,7 @@ class AuthService {
           await this.syncFirebaseUser(fbUser);
         } else {
           // If no active Firebase user, check if local demo session is active
-          const sessionUser = localStorage.getItem(AUTH_USER_KEY);
+          const sessionUser = safeStorage.getItem(AUTH_USER_KEY);
           if (sessionUser) {
             try {
               const parsed = JSON.parse(sessionUser);
@@ -77,7 +151,7 @@ class AuthService {
                 this.currentUser = parsed;
               } else {
                 this.currentUser = null;
-                localStorage.removeItem(AUTH_USER_KEY);
+                safeStorage.removeItem(AUTH_USER_KEY);
               }
             } catch {
               this.currentUser = null;
@@ -92,11 +166,11 @@ class AuthService {
     } else {
       // Local development fallback
       try {
-        const storedUsers = localStorage.getItem(REGISTERED_USERS_KEY);
+        const storedUsers = safeStorage.getItem(REGISTERED_USERS_KEY);
         if (!storedUsers) {
-          localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(INITIAL_DEMO_USERS));
+          safeStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(INITIAL_DEMO_USERS));
         }
-        const sessionUser = localStorage.getItem(AUTH_USER_KEY);
+        const sessionUser = safeStorage.getItem(AUTH_USER_KEY);
         if (sessionUser) {
           this.currentUser = JSON.parse(sessionUser);
         }
@@ -107,8 +181,38 @@ class AuthService {
     }
   }
 
+  /**
+   * Syncs a Firebase user into application state.
+   * Resilient to transient Firestore read/write errors: never signs out an authenticated user
+   * merely because cloud document persistence encountered a temporary network or permission error.
+   */
   private async syncFirebaseUser(fbUser: FirebaseUser): Promise<User> {
-    const existing = await firestoreService.getUserProfile(fbUser.uid);
+    let existing: User | null = null;
+    try {
+      existing = await firestoreService.getUserProfile(fbUser.uid);
+    } catch (e) {
+      console.warn('[AuthService] Firestore profile retrieval deferred:', e);
+    }
+
+    // If cloud read was unavailable/offline, check local memory or safeStorage cache
+    if (!existing) {
+      if (this.currentUser && (this.currentUser.id === fbUser.uid || this.currentUser.firebaseUid === fbUser.uid)) {
+        existing = this.currentUser;
+      } else {
+        try {
+          const cachedRaw = safeStorage.getItem(AUTH_USER_KEY);
+          if (cachedRaw) {
+            const parsed = JSON.parse(cachedRaw);
+            if (parsed && (parsed.id === fbUser.uid || parsed.firebaseUid === fbUser.uid)) {
+              existing = parsed;
+            }
+          }
+        } catch (cacheErr) {
+          console.warn('[AuthService] Failed to read cached profile:', cacheErr);
+        }
+      }
+    }
+
     let appUser: User;
 
     if (existing) {
@@ -131,7 +235,7 @@ class AuthService {
         tier: 'pro',
         authType: 'cloud',
         firebaseUid: fbUser.uid,
-        avatar: fbUser.photoURL || undefined,
+        ...(fbUser.photoURL ? { avatar: fbUser.photoURL } : {}),
         hasCompletedOnboarding: false,
         preferences: {
           useCase: 'content_creation',
@@ -141,12 +245,20 @@ class AuthService {
         createdAt: new Date().toISOString(),
         lastLoginAt: new Date().toISOString(),
       };
-      // Persist new user profile to Firestore
-      await firestoreService.saveUserProfile(appUser);
+
+      // Persist profile to Firestore safely
+      try {
+        await firestoreService.saveUserProfile(appUser);
+      } catch (saveErr) {
+        console.warn('[AuthService] Firestore profile persistence deferred (non-fatal):', saveErr);
+      }
     }
 
     this.currentUser = appUser;
-    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(appUser));
+    safeStorage.setItem(AUTH_USER_KEY, JSON.stringify(appUser));
+    try {
+      storage.restoreUserUnsyncedDrafts(appUser.id);
+    } catch {}
     return appUser;
   }
 
@@ -181,117 +293,162 @@ class AuthService {
     if (isFirebaseAvailable && firebaseAuth && firebaseAuth.currentUser) {
       return await firebaseAuth.currentUser.getIdToken();
     }
+    if (this.currentUser && this.currentUser.authType === 'local_demo') {
+      return `demo_token_${this.currentUser.id}`;
+    }
     return null;
   }
 
-  async signIn(email: string, password?: string): Promise<{ success: boolean; user?: User; error?: string }> {
+  async signIn(
+    email: string,
+    password?: string,
+    options: { forceSandbox?: boolean } = {}
+  ): Promise<AuthActionResult<User>> {
     const cleanEmail = email.trim().toLowerCase();
     if (!cleanEmail || !cleanEmail.includes('@')) {
-      return { success: false, error: 'Please enter a valid email address.' };
+      const appErr = createAppError({
+        code: 'INVALID_EMAIL',
+        message: 'Please enter a valid email address.',
+        field: 'email',
+        stage: 'auth',
+        retryable: true,
+        whatFailed: 'Email address validation',
+        whereFailed: 'Sign-in form email input',
+        whyFailed: 'The provided email address does not have a valid format.',
+        whatToDoNext: 'Check for typos and enter a complete address (e.g. name@domain.com).',
+      });
+      return { success: false, error: appErr, errorMessage: appErr.message };
     }
 
-    // If Firebase Auth is available, execute real cloud authentication
-    if (isFirebaseAvailable && firebaseAuth) {
-      try {
-        if (!password) {
-          return { success: false, error: 'Password is required for cloud authentication.' };
-        }
-        const userCred = await signInWithEmailAndPassword(firebaseAuth, cleanEmail, password);
-        const user = await this.syncFirebaseUser(userCred.user);
-        this.notify();
-        return { success: true, user };
-      } catch (err: any) {
-        console.error('[Firebase Auth] Sign in error:', err.code, err.message);
-        let errorMsg = 'Failed to sign in. Please verify your credentials.';
-        if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-          errorMsg = 'Invalid email or password. If you do not have an account, please sign up.';
-        } else if (err.code === 'auth/too-many-requests') {
-          errorMsg = 'Too many failed login attempts. Please reset your password or try again later.';
-        }
-        return { success: false, error: errorMsg };
+    // Force sandbox mode if requested
+    if (options.forceSandbox || !isFirebaseAvailable || !firebaseAuth) {
+      return this.executeLocalSandboxSignIn(cleanEmail);
+    }
+
+    // Real Firebase Auth
+    try {
+      if (!password) {
+        const appErr = createAppError({
+          code: 'MISSING_PASSWORD',
+          message: 'Password is required to sign in.',
+          field: 'password',
+          stage: 'auth',
+          retryable: true,
+          whatFailed: 'Password authentication check',
+          whereFailed: 'Sign-in form password field',
+          whyFailed: 'Password input was left empty.',
+          whatToDoNext: 'Enter your password to sign in.',
+        });
+        return { success: false, error: appErr, errorMessage: appErr.message };
       }
-    }
 
-    // Local demo sandbox fallback
-    await new Promise((res) => setTimeout(res, 300));
-    const demoUser = INITIAL_DEMO_USERS.find((u) => u.email.toLowerCase() === cleanEmail);
-    if (demoUser) {
-      this.currentUser = { ...demoUser, lastLoginAt: new Date().toISOString() };
-      localStorage.setItem(AUTH_USER_KEY, JSON.stringify(this.currentUser));
+      const userCred = await signInWithEmailAndPassword(firebaseAuth, cleanEmail, password);
+      const user = await this.syncFirebaseUser(userCred.user);
       this.notify();
-      return { success: true, user: this.currentUser };
+      return { success: true, user };
+    } catch (err: any) {
+      console.error('[Firebase Auth] Sign in error:', err.code, err.message);
+      const appErr = mapFirebaseError(err, {
+        stage: 'auth',
+        field: 'password',
+        operation: 'User Sign In',
+        email: cleanEmail,
+      });
+      return {
+        success: false,
+        error: appErr,
+        errorMessage: appErr.message,
+      };
     }
-
-    const fallbackUser: User = {
-      id: 'user_' + Math.random().toString(36).substring(2, 9),
-      name: cleanEmail.split('@')[0],
-      email: cleanEmail,
-      role: 'creator',
-      tier: 'free',
-      authType: 'local_demo',
-      hasCompletedOnboarding: false,
-      createdAt: new Date().toISOString(),
-      lastLoginAt: new Date().toISOString(),
-    };
-    this.currentUser = fallbackUser;
-    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(fallbackUser));
-    this.notify();
-    return { success: true, user: fallbackUser };
   }
 
-  async signUp(name: string, email: string, password?: string): Promise<{ success: boolean; user?: User; error?: string }> {
+  async signUp(
+    name: string,
+    email: string,
+    password?: string,
+    options: { forceSandbox?: boolean } = {}
+  ): Promise<AuthActionResult<User>> {
     const cleanEmail = email.trim().toLowerCase();
     const cleanName = name.trim();
 
     if (!cleanName) {
-      return { success: false, error: 'Please provide your full name or creator handle.' };
+      const appErr = createAppError({
+        code: 'MISSING_NAME',
+        message: 'Please provide your full name or creator handle.',
+        field: 'name',
+        stage: 'auth',
+        retryable: true,
+        whatFailed: 'Creator name validation',
+        whereFailed: 'Registration form name input',
+        whyFailed: 'The name or handle field was submitted empty.',
+        whatToDoNext: 'Enter your name or creator handle to personalize your workspace.',
+      });
+      return { success: false, error: appErr, errorMessage: appErr.message };
     }
+
     if (!cleanEmail || !cleanEmail.includes('@')) {
-      return { success: false, error: 'Please enter a valid email address.' };
+      const appErr = createAppError({
+        code: 'INVALID_EMAIL',
+        message: 'Please enter a valid email address.',
+        field: 'email',
+        stage: 'auth',
+        retryable: true,
+        whatFailed: 'Email address validation',
+        whereFailed: 'Registration form email input',
+        whyFailed: 'The provided email address does not have a valid format.',
+        whatToDoNext: 'Check for typos and enter a valid email address.',
+      });
+      return { success: false, error: appErr, errorMessage: appErr.message };
     }
+
     if (!password || password.length < 6) {
-      return { success: false, error: 'Password must be at least 6 characters.' };
+      const appErr = createAppError({
+        code: 'WEAK_PASSWORD',
+        message: 'Password must be at least 6 characters.',
+        field: 'password',
+        stage: 'auth',
+        retryable: true,
+        whatFailed: 'Password security validation',
+        whereFailed: 'Registration form password input',
+        whyFailed: 'The entered password is shorter than 6 characters.',
+        whatToDoNext: 'Enter a password with 6 or more characters and retry.',
+      });
+      return { success: false, error: appErr, errorMessage: appErr.message };
+    }
+
+    // Force sandbox mode if requested
+    if (options.forceSandbox || !isFirebaseAvailable || !firebaseAuth) {
+      return this.executeLocalSandboxSignUp(cleanName, cleanEmail);
     }
 
     // Real Firebase Auth user registration
-    if (isFirebaseAvailable && firebaseAuth) {
+    try {
+      const userCred = await createUserWithEmailAndPassword(firebaseAuth, cleanEmail, password);
       try {
-        const userCred = await createUserWithEmailAndPassword(firebaseAuth, cleanEmail, password);
         await updateProfile(userCred.user, { displayName: cleanName });
-        const user = await this.syncFirebaseUser(userCred.user);
-        this.notify();
-        return { success: true, user };
-      } catch (err: any) {
-        console.error('[Firebase Auth] Sign up error:', err.code, err.message);
-        let errorMsg = 'Failed to create account.';
-        if (err.code === 'auth/email-already-in-use') {
-          errorMsg = 'An account with this email already exists. Please sign in instead.';
-        } else if (err.code === 'auth/weak-password') {
-          errorMsg = 'The password is too weak. Please use at least 6 characters.';
-        }
-        return { success: false, error: errorMsg };
+      } catch (profileErr) {
+        console.warn('[Firebase Auth] Display name update deferred:', profileErr);
       }
+      const user = await this.syncFirebaseUser(userCred.user);
+      this.notify();
+      return { success: true, user };
+    } catch (err: any) {
+      console.error('[Firebase Auth] Sign up error:', err.code, err.message);
+      const appErr = mapFirebaseError(err, {
+        stage: 'auth',
+        field: err.code === 'auth/weak-password' ? 'password' : 'email',
+        operation: 'Account Registration',
+        email: cleanEmail,
+      });
+      return {
+        success: false,
+        error: appErr,
+        errorMessage: appErr.message,
+      };
     }
-
-    // Local demo fallback
-    const newUser: User = {
-      id: 'user_' + Math.random().toString(36).substring(2, 9),
-      name: cleanName,
-      email: cleanEmail,
-      role: 'creator',
-      tier: 'free',
-      authType: 'local_demo',
-      hasCompletedOnboarding: false,
-      createdAt: new Date().toISOString(),
-      lastLoginAt: new Date().toISOString(),
-    };
-    this.currentUser = newUser;
-    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(newUser));
-    this.notify();
-    return { success: true, user: newUser };
   }
 
-  async signInWithGoogle(): Promise<{ success: boolean; user?: User; error?: string }> {
+  async signInWithGoogle(): Promise<AuthActionResult<User>> {
     if (isFirebaseAvailable && firebaseAuth) {
       try {
         const provider = new GoogleAuthProvider();
@@ -302,10 +459,11 @@ class AuthService {
         return { success: true, user };
       } catch (err: any) {
         console.error('[Firebase Auth] Google Sign-In error:', err.code, err.message);
-        if (err.code === 'auth/popup-closed-by-user') {
-          return { success: false, error: 'Google sign-in was closed before completion.' };
-        }
-        return { success: false, error: err.message || 'Google sign-in failed.' };
+        const appErr = mapFirebaseError(err, {
+          stage: 'auth',
+          operation: 'Google OAuth Sign In',
+        });
+        return { success: false, error: appErr, errorMessage: appErr.message };
       }
     }
 
@@ -322,62 +480,263 @@ class AuthService {
       lastLoginAt: new Date().toISOString(),
     };
     this.currentUser = googleUser;
-    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(googleUser));
+    safeStorage.setItem(AUTH_USER_KEY, JSON.stringify(googleUser));
     this.notify();
     return { success: true, user: googleUser };
   }
 
-  async requestPasswordReset(email: string): Promise<{ success: boolean; message: string }> {
+  async requestPasswordReset(email: string): Promise<{ success: boolean; message: string; error?: AppError }> {
     const cleanEmail = email.trim().toLowerCase();
     if (!cleanEmail || !cleanEmail.includes('@')) {
-      return { success: false, message: 'Please enter a valid email address.' };
+      const appErr = createAppError({
+        code: 'INVALID_EMAIL',
+        message: 'Please enter a valid email address.',
+        field: 'email',
+        stage: 'auth',
+        retryable: true,
+        whatFailed: 'Password recovery request',
+        whereFailed: 'Password recovery form',
+        whyFailed: 'The entered email address is incomplete or invalid.',
+        whatToDoNext: 'Enter a valid email address (e.g. name@domain.com) and retry.',
+      });
+      return { success: false, message: appErr.message, error: appErr };
     }
 
     if (isFirebaseAvailable && firebaseAuth) {
       try {
-        await sendPasswordResetEmail(firebaseAuth, cleanEmail);
+        let sent = false;
+        if (typeof window !== 'undefined' && window.location?.origin) {
+          try {
+            const settings: ActionCodeSettings = {
+              url: `${window.location.origin}/reset-password`,
+              handleCodeInApp: true,
+            };
+            await sendPasswordResetEmail(firebaseAuth, cleanEmail, settings);
+            sent = true;
+          } catch (actionErr: any) {
+            if (actionErr?.code === 'auth/unauthorized-continue-uri') {
+              console.warn('[Firebase Auth] Custom continue URI not whitelisted, falling back to standard reset link.');
+            } else {
+              throw actionErr;
+            }
+          }
+        }
+
+        if (!sent) {
+          await sendPasswordResetEmail(firebaseAuth, cleanEmail);
+        }
+
         return {
           success: true,
-          message: `Official password recovery email dispatched to ${cleanEmail}. Check your inbox.`,
+          message: `Official password recovery email dispatched to ${cleanEmail}. Check your inbox and spam/junk folder.`,
         };
       } catch (err: any) {
         console.error('[Firebase Auth] Password reset error:', err.code, err.message);
+        const appErr = mapFirebaseError(err, {
+          stage: 'auth',
+          field: 'email',
+          operation: 'Password Reset Dispatch',
+          email: cleanEmail,
+        });
         return {
           success: false,
-          message: err.message || 'Failed to dispatch password recovery email.',
+          message: appErr.message,
+          error: appErr,
         };
       }
     }
 
     return {
       success: true,
-      message: `Password reset instructions sent to ${cleanEmail}. (Local sandbox simulation).`,
+      message: `Password reset instructions sent to ${cleanEmail}. Check your inbox and spam folder. (Local sandbox simulation).`,
     };
+  }
+
+  /**
+   * Verifies an out-of-band password reset code (oobCode) from Firebase.
+   * Returns the verified account email if valid, or an AppError if expired/invalid.
+   */
+  async verifyResetCode(oobCode: string): Promise<{ success: boolean; email?: string; error?: AppError }> {
+    if (!oobCode || typeof oobCode !== 'string' || oobCode.trim() === '') {
+      const appErr = createAppError({
+        code: 'MISSING_ACTION_CODE',
+        message: 'No password reset code was provided in the link.',
+        stage: 'auth',
+        retryable: false,
+        whatFailed: 'Password reset code extraction',
+        whereFailed: 'URL parameter parser',
+        whyFailed: 'The password reset link did not contain a valid action code (oobCode).',
+        whatToDoNext: 'Click the link directly from your email, or request a new reset email.',
+        action: {
+          label: 'Request New Reset Link',
+          actionType: 'reset_password',
+          target: '/forgot-password',
+        },
+      });
+      return { success: false, error: appErr };
+    }
+
+    // Local sandbox simulation for development/testing
+    if (oobCode.startsWith('test_sandbox_code_')) {
+      const email = oobCode.replace('test_sandbox_code_', '') + '@obidostudio.com';
+      return { success: true, email };
+    }
+
+    if (isFirebaseAvailable && firebaseAuth) {
+      try {
+        const email = await verifyPasswordResetCode(firebaseAuth, oobCode);
+        return { success: true, email };
+      } catch (err: any) {
+        console.error('[Firebase Auth] verifyPasswordResetCode error:', err.code, err.message);
+        const appErr = mapFirebaseError(err, {
+          stage: 'auth',
+          operation: 'Verify Reset Code',
+        });
+        return { success: false, error: appErr };
+      }
+    }
+
+    const appErr = createAppError({
+      code: 'INVALID_ACTION_CODE',
+      message: 'This password reset link is invalid or has already been used.',
+      stage: 'auth',
+      retryable: false,
+      whatFailed: 'Password reset link verification',
+      whereFailed: 'Firebase Authentication action handler',
+      whyFailed: 'The reset link is malformed, has expired, or has already been used.',
+      whatToDoNext: 'Request a new password reset link from the Forgot Password page.',
+      action: {
+        label: 'Request New Reset Link',
+        actionType: 'reset_password',
+        target: '/forgot-password',
+      },
+    });
+    return { success: false, error: appErr };
+  }
+
+  /**
+   * Confirms password reset with Firebase using the verified action code.
+   */
+  async confirmPasswordReset(oobCode: string, newPassword: string): Promise<{ success: boolean; error?: AppError }> {
+    if (!newPassword || newPassword.length < 6) {
+      const appErr = createAppError({
+        code: 'WEAK_PASSWORD',
+        message: 'Password must be at least 6 characters long.',
+        field: 'newPassword',
+        stage: 'auth',
+        retryable: true,
+        whatFailed: 'Password length validation',
+        whereFailed: 'New password input field',
+        whyFailed: 'The password is shorter than 6 characters.',
+        whatToDoNext: 'Enter a password with at least 6 characters.',
+      });
+      return { success: false, error: appErr };
+    }
+
+    if (isFirebaseAvailable && firebaseAuth) {
+      try {
+        await confirmPasswordReset(firebaseAuth, oobCode, newPassword);
+        return { success: true };
+      } catch (err: any) {
+        console.error('[Firebase Auth] confirmPasswordReset error:', err.code, err.message);
+        const appErr = mapFirebaseError(err, {
+          stage: 'auth',
+          field: 'newPassword',
+          operation: 'Confirm Password Reset',
+        });
+        return { success: false, error: appErr };
+      }
+    }
+
+    // Local sandbox simulation
+    return { success: true };
+  }
+
+  private executeLocalSandboxSignIn(cleanEmail: string): AuthActionResult<User> {
+    const demoUser = INITIAL_DEMO_USERS.find((u) => u.email.toLowerCase() === cleanEmail);
+    if (demoUser) {
+      this.currentUser = { ...demoUser, lastLoginAt: new Date().toISOString() };
+      safeStorage.setItem(AUTH_USER_KEY, JSON.stringify(this.currentUser));
+      this.notify();
+      return { success: true, user: this.currentUser };
+    }
+
+    const fallbackUser: User = {
+      id: 'user_' + Math.random().toString(36).substring(2, 9),
+      name: cleanEmail.split('@')[0],
+      email: cleanEmail,
+      role: 'creator',
+      tier: 'free',
+      authType: 'local_demo',
+      hasCompletedOnboarding: false,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+    };
+    this.currentUser = fallbackUser;
+    safeStorage.setItem(AUTH_USER_KEY, JSON.stringify(fallbackUser));
+    this.notify();
+    return { success: true, user: fallbackUser };
+  }
+
+  private executeLocalSandboxSignUp(cleanName: string, cleanEmail: string): AuthActionResult<User> {
+    const newUser: User = {
+      id: 'user_' + Math.random().toString(36).substring(2, 9),
+      name: cleanName,
+      email: cleanEmail,
+      role: 'creator',
+      tier: 'free',
+      authType: 'local_demo',
+      hasCompletedOnboarding: false,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+    };
+    this.currentUser = newUser;
+    safeStorage.setItem(AUTH_USER_KEY, JSON.stringify(newUser));
+    this.notify();
+    return { success: true, user: newUser };
   }
 
   async completeOnboarding(preferences: UserPreferences): Promise<User | null> {
     if (!this.currentUser) return null;
 
+    const cleanPrefs: UserPreferences = {};
+    if (this.currentUser.preferences) {
+      for (const [k, v] of Object.entries(this.currentUser.preferences)) {
+        if (v !== undefined) {
+          (cleanPrefs as any)[k] = v;
+        }
+      }
+    }
+    if (preferences) {
+      for (const [k, v] of Object.entries(preferences)) {
+        if (v !== undefined) {
+          (cleanPrefs as any)[k] = v;
+        }
+      }
+    }
+
     const updatedUser: User = {
       ...this.currentUser,
       hasCompletedOnboarding: true,
-      preferences: {
-        ...this.currentUser.preferences,
-        ...preferences,
-      },
+      preferences: cleanPrefs,
     };
 
     if (this.currentUser.authType === 'cloud' && isFirebaseAvailable) {
-      await firestoreService.saveUserProfile(updatedUser);
+      try {
+        await firestoreService.saveUserProfile(updatedUser);
+      } catch (err) {
+        console.warn('[AuthService] Onboarding preferences cloud sync deferred:', err);
+      }
     }
 
     this.currentUser = updatedUser;
-    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(updatedUser));
+    safeStorage.setItem(AUTH_USER_KEY, JSON.stringify(updatedUser));
     this.notify();
     return updatedUser;
   }
 
   async signOut() {
+    const previousUserId = this.currentUser?.id;
     if (isFirebaseAvailable && firebaseAuth) {
       try {
         await firebaseSignOut(firebaseAuth);
@@ -386,7 +745,15 @@ class AuthService {
       }
     }
     this.currentUser = null;
-    localStorage.removeItem(AUTH_USER_KEY);
+    safeStorage.removeItem(AUTH_USER_KEY);
+
+    // SEC-01: Safely clean up user-specific project cache and active project ID
+    try {
+      storage.handleUserSignOut(previousUserId);
+    } catch (cacheErr) {
+      console.warn('[AuthService] Cache cleanup error on signOut:', cacheErr);
+    }
+
     this.notify();
   }
 }

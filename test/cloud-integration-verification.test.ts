@@ -371,6 +371,35 @@ async function runMilestone33Verification() {
     }
   });
 
+  await test('F3', 'sanitizeFirestoreData recursively strips undefined properties from payloads', async () => {
+    const { sanitizeFirestoreData } = await import('../src/services/firestoreService');
+    const dirtyPayload = {
+      id: 'user_123',
+      name: 'Test Creator',
+      email: 'creator@test.com',
+      avatar: undefined,
+      preferences: {
+        useCase: 'content_creation',
+        experienceLevel: 'intermediate',
+        language: 'en',
+        initialIdea: undefined, // Exactly matches the reported user error
+        nested: {
+          validProp: 42,
+          invalidProp: undefined,
+        },
+      },
+      list: [1, undefined, 2, { tag: undefined, label: 'clean' }],
+    };
+
+    const sanitized = sanitizeFirestoreData(dirtyPayload);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(sanitized, 'avatar'), false);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(sanitized.preferences, 'initialIdea'), false);
+    assert.strictEqual(sanitized.preferences.useCase, 'content_creation');
+    assert.strictEqual(sanitized.preferences.nested.validProp, 42);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(sanitized.preferences.nested, 'invalidProp'), false);
+    assert.deepStrictEqual(sanitized.list, [1, 2, { label: 'clean' }]);
+  });
+
   console.log('\n========================================================================');
   console.log(`   Verification Summary: ${passed} PASSED | ${failed} FAILED | ${blocked} BLOCKED   `);
   console.log('========================================================================\n');
@@ -378,6 +407,7 @@ async function runMilestone33Verification() {
   if (failed > 0) {
     process.exit(1);
   }
+  process.exit(0);
 }
 
 runMilestone33Verification().catch((err) => {

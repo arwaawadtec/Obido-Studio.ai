@@ -1,8 +1,12 @@
 import React, { useState } from 'react';
-import { Video, ArrowRight, Sparkles, Loader2, AlertCircle, Check, Shield, Globe } from 'lucide-react';
+import { Video, ArrowRight, Loader2, Shield } from 'lucide-react';
 import { router } from '../../services/router';
 import { auth } from '../../services/auth';
 import { storage } from '../../services/storage';
+import { AppError } from '../../types/error';
+import { GlobalErrorCard } from '../common/GlobalErrorCard';
+import { PasswordInput } from '../common/PasswordInput';
+import { createAppError } from '../../services/errorService';
 
 export const SignInPage: React.FC = () => {
   const lang = storage.getLanguagePreference();
@@ -11,19 +15,32 @@ export const SignInPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorObj, setErrorObj] = useState<AppError | null>(null);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email.trim()) {
-      setErrorMsg(lang === 'ar' ? 'الرجاء إدخال البريد الإلكتروني' : 'Please provide your email address.');
+  const handleSubmit = async (e: React.FormEvent, forceSandbox = false) => {
+    if (e && e.preventDefault) e.preventDefault();
+
+    if (!email.trim() || !email.includes('@')) {
+      setErrorObj(
+        createAppError({
+          code: 'VALIDATION_ERROR',
+          message: lang === 'ar' ? 'الرجاء إدخال البريد الإلكتروني' : 'Please provide a valid email address.',
+          field: 'email',
+          stage: 'auth',
+          retryable: true,
+          whatFailed: 'Email address validation check',
+          whereFailed: 'Sign-in form (Email input)',
+          whyFailed: 'The email address is empty or not properly formatted.',
+          whatToDoNext: 'Enter a valid email address to sign in.',
+        })
+      );
       return;
     }
 
     setLoading(true);
-    setErrorMsg(null);
+    setErrorObj(null);
 
-    const res = await auth.signIn(email, password);
+    const res = await auth.signIn(email, password, { forceSandbox });
     setLoading(false);
 
     if (res.success && res.user) {
@@ -33,14 +50,27 @@ export const SignInPage: React.FC = () => {
         const redirect = (router.getRoute() as any).redirect || '/app';
         router.navigate(redirect);
       }
+    } else if (res.error) {
+      setErrorObj(res.error);
     } else {
-      setErrorMsg(res.error || 'Failed to sign in.');
+      setErrorObj(
+        createAppError({
+          code: 'SIGNIN_FAILED',
+          message: res.errorMessage || 'Failed to sign in.',
+          stage: 'auth',
+          retryable: true,
+          whatFailed: 'User authentication',
+          whereFailed: 'Sign-in credential validator',
+          whyFailed: res.errorMessage || 'Invalid credentials or connection error.',
+          whatToDoNext: 'Check your password or reset it if you cannot access your account.',
+        })
+      );
     }
   };
 
   const handleGoogleSignIn = async () => {
     setLoading(true);
-    setErrorMsg(null);
+    setErrorObj(null);
     const res = await auth.signInWithGoogle();
     setLoading(false);
 
@@ -50,14 +80,40 @@ export const SignInPage: React.FC = () => {
       } else {
         router.navigate('/app');
       }
+    } else if (res.error) {
+      setErrorObj(res.error);
     } else {
-      setErrorMsg(res.error || 'Google sign-in failed.');
+      setErrorObj(
+        createAppError({
+          code: 'GOOGLE_SIGNIN_FAILED',
+          message: res.errorMessage || 'Google sign-in failed.',
+          stage: 'auth',
+          retryable: true,
+          whatFailed: 'Google sign-in authentication',
+          whereFailed: 'Google OAuth dialog',
+          whyFailed: res.errorMessage || 'Authentication was interrupted.',
+          whatToDoNext: 'Try again and complete the Google sign-in window.',
+        })
+      );
     }
   };
 
   const handleQuickDemoFill = (demoEmail: string) => {
     setEmail(demoEmail);
     setPassword('studio1234');
+    setErrorObj(null);
+    // Directly authenticate with selected sandbox profile
+    auth.signIn(demoEmail, 'studio1234', { forceSandbox: true }).then((res) => {
+      if (res.success && res.user) {
+        router.navigate('/app');
+      }
+    });
+  };
+
+  const handleAction = (actionType: string) => {
+    if (actionType === 'sandbox_mode') {
+      handleSubmit({ preventDefault: () => {} } as any, true);
+    }
   };
 
   return (
@@ -82,7 +138,7 @@ export const SignInPage: React.FC = () => {
         </p>
       </div>
 
-      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md px-4 sm:px-0">
+      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-lg px-4 sm:px-0">
         <div className="bg-white py-8 px-6 sm:px-10 border border-[#E3E6EF] rounded-2xl shadow-sm space-y-6">
           {/* Provider Transparency Banner */}
           <div className="p-3 bg-[#F6F7FB] border border-[#E3E6EF] rounded-lg flex items-start gap-2.5 text-[11px] text-[#62677A]">
@@ -99,15 +155,19 @@ export const SignInPage: React.FC = () => {
             </div>
           </div>
 
-          {errorMsg && (
-            <div className="p-3 bg-[#DC2626]/10 border border-[#DC2626]/20 rounded-lg text-xs text-[#DC2626] flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{errorMsg}</span>
-            </div>
+          {/* 4-Part Global Error Card */}
+          {errorObj && (
+            <GlobalErrorCard
+              error={errorObj}
+              onRetry={() => handleSubmit({ preventDefault: () => {} } as any)}
+              onAction={handleAction}
+              onDismiss={() => setErrorObj(null)}
+              lang={lang}
+            />
           )}
 
           {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={(e) => handleSubmit(e)} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-[#11152B] mb-1.5">
                 {lang === 'ar' ? 'البريد الإلكتروني' : 'Email Address'}
@@ -118,29 +178,36 @@ export const SignInPage: React.FC = () => {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="name@company.com"
-                className="w-full text-xs px-3.5 py-2.5 bg-white border border-[#E3E6EF] rounded-lg focus:border-[#635BFF] focus:outline-none transition-colors"
+                className={`w-full text-xs px-3.5 py-2.5 bg-white border rounded-lg focus:outline-none transition-colors ${
+                  errorObj?.field === 'email' ? 'border-rose-400 focus:border-rose-500' : 'border-[#E3E6EF] focus:border-[#635BFF]'
+                }`}
               />
             </div>
 
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <label className="text-xs font-semibold text-[#11152B]">
+                <label htmlFor="signin-password" className="text-xs font-semibold text-[#11152B]">
                   {lang === 'ar' ? 'كلمة المرور' : 'Password'}
                 </label>
                 <button
                   type="button"
                   onClick={() => router.navigate('/forgot-password')}
-                  className="text-xs text-[#635BFF] hover:underline"
+                  className="text-xs text-[#635BFF] hover:underline cursor-pointer"
                 >
                   {lang === 'ar' ? 'نسيت كلمة المرور؟' : 'Forgot password?'}
                 </button>
               </div>
-              <input
-                type="password"
+              <PasswordInput
+                id="signin-password"
+                name="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
-                className="w-full text-xs px-3.5 py-2.5 bg-white border border-[#E3E6EF] rounded-lg focus:border-[#635BFF] focus:outline-none transition-colors"
+                required
+                autoComplete="current-password"
+                error={errorObj?.field === 'password'}
+                showToggleAriaLabel="Show password"
+                hideToggleAriaLabel="Hide password"
               />
             </div>
 
@@ -203,22 +270,22 @@ export const SignInPage: React.FC = () => {
           {/* Quick Demo Credentials */}
           <div className="pt-2 border-t border-[#E3E6EF] space-y-2">
             <span className="text-[11px] text-[#62677A] block">
-              1-Click Demo Profiles (Testing):
+              1-Click Instant Demo Access (Testing & Evaluation):
             </span>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={() => handleQuickDemoFill('creator@obidostudio.com')}
-                className="text-[11px] font-mono text-[#635BFF] bg-[#635BFF]/5 hover:bg-[#635BFF]/10 px-2 py-1 rounded border border-[#635BFF]/20"
+                className="text-[11px] font-mono text-[#635BFF] bg-[#635BFF]/5 hover:bg-[#635BFF]/10 px-2.5 py-1.5 rounded-lg border border-[#635BFF]/20 transition-all font-semibold"
               >
                 Sarah (Creator Pro)
               </button>
               <button
                 type="button"
                 onClick={() => handleQuickDemoFill('demo@obidostudio.com')}
-                className="text-[11px] font-mono text-[#635BFF] bg-[#635BFF]/5 hover:bg-[#635BFF]/10 px-2 py-1 rounded border border-[#635BFF]/20"
+                className="text-[11px] font-mono text-[#635BFF] bg-[#635BFF]/5 hover:bg-[#635BFF]/10 px-2.5 py-1.5 rounded-lg border border-[#635BFF]/20 transition-all font-semibold"
               >
-                Demo Director
+                Demo Director (Studio Tier)
               </button>
             </div>
           </div>

@@ -1,8 +1,12 @@
 import React, { useState } from 'react';
-import { Video, ArrowRight, Loader2, AlertCircle, Shield, Check } from 'lucide-react';
+import { Video, ArrowRight, Loader2, Shield, Sparkles } from 'lucide-react';
 import { router } from '../../services/router';
 import { auth } from '../../services/auth';
 import { storage } from '../../services/storage';
+import { AppError } from '../../types/error';
+import { GlobalErrorCard } from '../common/GlobalErrorCard';
+import { PasswordInput } from '../common/PasswordInput';
+import { createAppError } from '../../services/errorService';
 
 export const SignUpPage: React.FC = () => {
   const lang = storage.getLanguagePreference();
@@ -12,44 +16,106 @@ export const SignUpPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [agreeTerms, setAgreeTerms] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorObj, setErrorObj] = useState<AppError | null>(null);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e: React.FormEvent, forceSandbox = false) => {
+    if (e && e.preventDefault) e.preventDefault();
+
     if (!name.trim()) {
-      setErrorMsg(lang === 'ar' ? 'الرجاء إدخال اسمك الكامل' : 'Please provide your full name.');
+      setErrorObj(
+        createAppError({
+          code: 'VALIDATION_ERROR',
+          message: lang === 'ar' ? 'الرجاء إدخال اسمك الكامل' : 'Please provide your full name or creator handle.',
+          field: 'name',
+          stage: 'auth',
+          retryable: true,
+          whatFailed: 'Name validation check',
+          whereFailed: 'Registration form (Name input)',
+          whyFailed: 'The name field was left blank.',
+          whatToDoNext: 'Enter your name or creator handle to proceed.',
+        })
+      );
       return;
     }
     if (!email.trim() || !email.includes('@')) {
-      setErrorMsg(lang === 'ar' ? 'الرجاء إدخال بريد إلكتروني صالح' : 'Please enter a valid email address.');
+      setErrorObj(
+        createAppError({
+          code: 'VALIDATION_ERROR',
+          message: lang === 'ar' ? 'الرجاء إدخال بريد إلكتروني صالح' : 'Please enter a valid email address.',
+          field: 'email',
+          stage: 'auth',
+          retryable: true,
+          whatFailed: 'Email address validation check',
+          whereFailed: 'Registration form (Email input)',
+          whyFailed: 'The email address is missing or has an invalid structure.',
+          whatToDoNext: 'Check for typos and enter a valid email address.',
+        })
+      );
       return;
     }
     if (password.length < 6) {
-      setErrorMsg(lang === 'ar' ? 'كلمة المرور يجب أن لا تقل عن 6 أحرف' : 'Password must be at least 6 characters.');
+      setErrorObj(
+        createAppError({
+          code: 'VALIDATION_ERROR',
+          message: lang === 'ar' ? 'كلمة المرور يجب أن لا تقل عن 6 أحرف' : 'Password must be at least 6 characters.',
+          field: 'password',
+          stage: 'auth',
+          retryable: true,
+          whatFailed: 'Password security length check',
+          whereFailed: 'Registration form (Password input)',
+          whyFailed: 'The password is fewer than 6 characters.',
+          whatToDoNext: 'Enter a password with at least 6 characters and retry.',
+        })
+      );
       return;
     }
     if (!agreeTerms) {
-      setErrorMsg(lang === 'ar' ? 'يجب الموافقة على شروط الاستخدام' : 'Please agree to the Terms of Service.');
+      setErrorObj(
+        createAppError({
+          code: 'TERMS_REQUIRED',
+          message: lang === 'ar' ? 'يجب الموافقة على شروط الاستخدام' : 'Please agree to the Terms of Service.',
+          field: 'terms',
+          stage: 'auth',
+          retryable: true,
+          whatFailed: 'Terms acceptance check',
+          whereFailed: 'Registration form (Terms checkbox)',
+          whyFailed: 'Terms of service agreement was not checked.',
+          whatToDoNext: 'Check the agreement box to accept terms and create your account.',
+        })
+      );
       return;
     }
 
     setLoading(true);
-    setErrorMsg(null);
+    setErrorObj(null);
 
-    const res = await auth.signUp(name, email, password);
+    const res = await auth.signUp(name, email, password, { forceSandbox });
     setLoading(false);
 
     if (res.success && res.user) {
       // New users must always complete onboarding
       router.navigate('/onboarding');
+    } else if (res.error) {
+      setErrorObj(res.error);
     } else {
-      setErrorMsg(res.error || 'Failed to create account.');
+      setErrorObj(
+        createAppError({
+          code: 'UNKNOWN_REGISTRATION_ERROR',
+          message: res.errorMessage || 'Failed to create account.',
+          stage: 'auth',
+          retryable: true,
+          whatFailed: 'Account creation',
+          whereFailed: 'Registration service',
+          whyFailed: res.errorMessage || 'Unknown system error occurred.',
+          whatToDoNext: 'Retry your registration or use the Development Sandbox mode.',
+        })
+      );
     }
   };
 
   const handleGoogleSignUp = async () => {
     setLoading(true);
-    setErrorMsg(null);
+    setErrorObj(null);
     const res = await auth.signInWithGoogle();
     setLoading(false);
 
@@ -59,8 +125,27 @@ export const SignUpPage: React.FC = () => {
       } else {
         router.navigate('/app');
       }
+    } else if (res.error) {
+      setErrorObj(res.error);
     } else {
-      setErrorMsg(res.error || 'Google sign-up failed.');
+      setErrorObj(
+        createAppError({
+          code: 'GOOGLE_SIGNUP_FAILED',
+          message: res.errorMessage || 'Google sign-up failed.',
+          stage: 'auth',
+          retryable: true,
+          whatFailed: 'Google sign-up authentication',
+          whereFailed: 'Google OAuth flow',
+          whyFailed: res.errorMessage || 'Sign-in window closed or unverified.',
+          whatToDoNext: 'Try Google sign-up again or create an account with email.',
+        })
+      );
+    }
+  };
+
+  const handleAction = (actionType: string) => {
+    if (actionType === 'sandbox_mode') {
+      handleSubmit({ preventDefault: () => {} } as any, true);
     }
   };
 
@@ -85,7 +170,7 @@ export const SignUpPage: React.FC = () => {
         </p>
       </div>
 
-      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md px-4 sm:px-0">
+      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-lg px-4 sm:px-0">
         <div className="bg-white py-8 px-6 sm:px-10 border border-[#E3E6EF] rounded-2xl shadow-sm space-y-6">
           {/* Provider Transparency Banner */}
           <div className="p-3 bg-[#F6F7FB] border border-[#E3E6EF] rounded-lg flex items-start gap-2.5 text-[11px] text-[#62677A]">
@@ -102,14 +187,18 @@ export const SignUpPage: React.FC = () => {
             </div>
           </div>
 
-          {errorMsg && (
-            <div className="p-3 bg-[#DC2626]/10 border border-[#DC2626]/20 rounded-lg text-xs text-[#DC2626] flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{errorMsg}</span>
-            </div>
+          {/* 4-Part Global Error Card */}
+          {errorObj && (
+            <GlobalErrorCard
+              error={errorObj}
+              onRetry={() => handleSubmit({ preventDefault: () => {} } as any)}
+              onAction={handleAction}
+              onDismiss={() => setErrorObj(null)}
+              lang={lang}
+            />
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={(e) => handleSubmit(e)} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-[#11152B] mb-1.5">
                 {lang === 'ar' ? 'الاسم الكامل أو اسم القناة/الشركة' : 'Full Name or Creator Handle'}
@@ -120,7 +209,9 @@ export const SignUpPage: React.FC = () => {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g. Alex Rivera"
-                className="w-full text-xs px-3.5 py-2.5 bg-white border border-[#E3E6EF] rounded-lg focus:border-[#635BFF] focus:outline-none transition-colors"
+                className={`w-full text-xs px-3.5 py-2.5 bg-white border rounded-lg focus:outline-none transition-colors ${
+                  errorObj?.field === 'name' ? 'border-rose-400 focus:border-rose-500' : 'border-[#E3E6EF] focus:border-[#635BFF]'
+                }`}
               />
             </div>
 
@@ -134,21 +225,25 @@ export const SignUpPage: React.FC = () => {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="alex@company.com"
-                className="w-full text-xs px-3.5 py-2.5 bg-white border border-[#E3E6EF] rounded-lg focus:border-[#635BFF] focus:outline-none transition-colors"
+                className={`w-full text-xs px-3.5 py-2.5 bg-white border rounded-lg focus:outline-none transition-colors ${
+                  errorObj?.field === 'email' ? 'border-rose-400 focus:border-rose-500' : 'border-[#E3E6EF] focus:border-[#635BFF]'
+                }`}
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-[#11152B] mb-1.5">
-                {lang === 'ar' ? 'كلمة المرور' : 'Password'}
-              </label>
-              <input
-                type="password"
-                required
+              <PasswordInput
+                id="signup-password"
+                name="password"
+                label={lang === 'ar' ? 'كلمة المرور' : 'Password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="At least 6 characters"
-                className="w-full text-xs px-3.5 py-2.5 bg-white border border-[#E3E6EF] rounded-lg focus:border-[#635BFF] focus:outline-none transition-colors"
+                required
+                autoComplete="new-password"
+                error={errorObj?.field === 'password'}
+                showToggleAriaLabel="Show password"
+                hideToggleAriaLabel="Hide password"
               />
             </div>
 

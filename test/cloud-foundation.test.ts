@@ -161,7 +161,8 @@ async function runCloudTests() {
 
     assert.strictEqual(res.status, 403);
     assert.strictEqual(res.data.code, 'IDENTITY_MISMATCH');
-    assert.ok(res.data.error.includes('Forbidden'));
+    const errText = typeof res.data.error === 'string' ? res.data.error : res.data.error?.message || '';
+    assert.ok(errText.includes('Forbidden'));
   });
 
   // Test 8: Server-side Auth Verification: Valid Token matches identity

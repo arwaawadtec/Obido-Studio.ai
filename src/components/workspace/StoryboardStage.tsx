@@ -19,6 +19,9 @@ import {
 import { Project, Scene } from '../../types';
 import { storage } from '../../services/storage';
 import { authenticatedFetch } from '../../services/apiClient';
+import { AppError } from '../../types/error';
+import { mapApiError } from '../../services/errorService';
+import { GlobalErrorCard } from '../common/GlobalErrorCard';
 
 interface StoryboardStageProps {
   project: Project;
@@ -31,6 +34,7 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
   const [isGenerating, setIsGenerating] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorObj, setErrorObj] = useState<AppError | null>(null);
 
   const scenes = project.scenes || [];
   const targetDurationSec = project.brief.targetDurationSeconds;
@@ -65,7 +69,14 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Server error generating storyboard');
+      if (!res.ok) {
+        const mapped = mapApiError(data, res.status, {
+          stage: 'storyboard',
+          fallbackWhat: 'AI Storyboard decomposition',
+        });
+        setErrorObj(mapped);
+        return;
+      }
 
       if (data.scenes && Array.isArray(data.scenes)) {
         const newScenes: Scene[] = data.scenes.map((s: any, idx: number) => ({
@@ -218,7 +229,16 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
         </button>
       </div>
 
-      {errorMsg && (
+      {errorObj && (
+        <GlobalErrorCard
+          error={errorObj}
+          onRetry={handleGenerateFromScript}
+          onDismiss={() => setErrorObj(null)}
+          lang={lang}
+        />
+      )}
+
+      {errorMsg && !errorObj && (
         <div className="p-3 bg-[#DC2626]/10 border border-[#DC2626]/20 rounded-lg text-xs text-[#DC2626] flex items-center gap-2">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{errorMsg}</span>

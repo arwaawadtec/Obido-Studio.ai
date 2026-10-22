@@ -5,6 +5,7 @@ export type AppRoute =
   | { path: '/sign-in'; redirect?: string }
   | { path: '/sign-up'; redirect?: string }
   | { path: '/forgot-password' }
+  | { path: '/reset-password'; oobCode?: string; mode?: string }
   | { path: '/onboarding' }
   | { path: '/app' }
   | { path: '/app/projects' }
@@ -34,20 +35,35 @@ class RouterService {
       this.notify();
     });
 
+    // Subscribe to auth state changes to re-evaluate route guards on login/logout/onboarding
+    auth.subscribe(() => {
+      this.enforceRouteGuards();
+      this.notify();
+    });
+
     // Check auth guards on startup
     this.enforceRouteGuards();
   }
 
   private parsePath(pathname: string): AppRoute {
     const clean = pathname.replace(/\/+$/, '') || '/';
+    const urlParams =
+      typeof window !== 'undefined' && window.location
+        ? new URLSearchParams(window.location.search)
+        : new URLSearchParams();
+    const mode = urlParams.get('mode');
+    const oobCode = urlParams.get('oobCode') || undefined;
+
+    // Detect Firebase action code link or explicit /reset-password
+    if (clean === '/reset-password' || mode === 'resetPassword' || clean.includes('/__/auth/action')) {
+      return { path: '/reset-password', oobCode, mode: mode || undefined };
+    }
 
     if (clean === '' || clean === '/') return { path: '/' };
     if (clean === '/sign-in') {
-      const urlParams = new URLSearchParams(window.location.search);
       return { path: '/sign-in', redirect: urlParams.get('redirect') || undefined };
     }
     if (clean === '/sign-up') {
-      const urlParams = new URLSearchParams(window.location.search);
       return { path: '/sign-up', redirect: urlParams.get('redirect') || undefined };
     }
     if (clean === '/forgot-password') return { path: '/forgot-password' };
@@ -65,7 +81,13 @@ class RouterService {
     return { path: '/' };
   }
 
-  private enforceRouteGuards() {
+  public enforceRouteGuards() {
+    // If auth state is still resolving from cold start and no session is cached,
+    // defer guards to prevent redirect loops or premature redirection before state resolves.
+    if (!auth.isReady() && !auth.getCurrentUser()) {
+      return;
+    }
+
     const isAuth = auth.isAuthenticated();
     const user = auth.getCurrentUser();
     const current = this.currentRoute;
@@ -78,18 +100,39 @@ class RouterService {
       current.path === '/app/templates' ||
       current.path === '/onboarding';
 
+    // 1. Unauthenticated users cannot access any protected routes
     if (isProtectedRoute && !isAuth) {
       this.navigate('/sign-in', { redirect: this.currentPath, replace: true });
       return;
     }
 
-    // Auth routes for already authenticated users
+    const isAppRoute =
+      current.path === '/app' ||
+      current.path === '/app/projects' ||
+      current.path === '/app/workspace' ||
+      current.path === '/app/templates';
+
+    // 2. UX-01: Authenticated users who have NOT completed onboarding must be redirected to /onboarding
+    // when attempting to access any protected studio application routes
+    if (isAppRoute && isAuth && user && !user.hasCompletedOnboarding) {
+      this.navigate('/onboarding', { replace: true });
+      return;
+    }
+
+    // 3. UX-01: Authenticated users who have COMPLETED onboarding should not re-visit /onboarding
+    if (current.path === '/onboarding' && isAuth && user && user.hasCompletedOnboarding) {
+      this.navigate('/app', { replace: true });
+      return;
+    }
+
+    // 4. Authenticated users visiting /sign-in or /sign-up are redirected based on onboarding status
     if ((current.path === '/sign-in' || current.path === '/sign-up') && isAuth) {
       if (user && !user.hasCompletedOnboarding) {
         this.navigate('/onboarding', { replace: true });
       } else {
         this.navigate('/app', { replace: true });
       }
+      return;
     }
   }
 

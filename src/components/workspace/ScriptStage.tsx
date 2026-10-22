@@ -15,6 +15,9 @@ import {
 import { Project, ScriptVersion } from '../../types';
 import { storage } from '../../services/storage';
 import { authenticatedFetch } from '../../services/apiClient';
+import { AppError } from '../../types/error';
+import { mapApiError } from '../../services/errorService';
+import { GlobalErrorCard } from '../common/GlobalErrorCard';
 
 interface ScriptStageProps {
   project: Project;
@@ -46,6 +49,7 @@ export const ScriptStage: React.FC<ScriptStageProps> = ({ project, onProceedToSt
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorObj, setErrorObj] = useState<AppError | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -84,7 +88,12 @@ export const ScriptStage: React.FC<ScriptStageProps> = ({ project, onProceedToSt
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Server error generating script');
+        const mapped = mapApiError(data, res.status, {
+          stage: 'script',
+          fallbackWhat: 'AI Screenplay generation',
+        });
+        setErrorObj(mapped);
+        return;
       }
 
       if (data.script) {
@@ -271,7 +280,16 @@ export const ScriptStage: React.FC<ScriptStageProps> = ({ project, onProceedToSt
         </button>
       </div>
 
-      {errorMsg && (
+      {errorObj && (
+        <GlobalErrorCard
+          error={errorObj}
+          onRetry={handleGenerateScript}
+          onDismiss={() => setErrorObj(null)}
+          lang={lang}
+        />
+      )}
+
+      {errorMsg && !errorObj && (
         <div className="p-3 bg-[#DC2626]/10 border border-[#DC2626]/20 rounded-lg text-xs text-[#DC2626] flex items-center gap-2">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{errorMsg}</span>

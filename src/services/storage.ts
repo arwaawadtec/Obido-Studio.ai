@@ -498,17 +498,106 @@ class StorageService {
 
   getProjects(userId?: string): Project[] {
     if (!userId) {
-      // Unauthenticated / guest preview: return default projects
-      return [...this.projects];
+      // Unauthenticated / guest preview: return ONLY guest demo projects
+      return this.projects.filter((p) => p.userId === 'user_default');
     }
     // Return ONLY projects belonging to this authenticated user.
     // Do NOT seed production accounts with demo projects.
     return this.projects.filter((p) => p.userId === userId);
   }
 
+  /**
+   * SEC-01: Safely cleans up user-specific cached project data on sign-out.
+   * - Preserves unsynchronized local drafts under a quarantined user-scoped key so work is never lost.
+   * - Removes all projects belonging to the signed-out user from the shared local cache (this.projects & STORAGE_KEY).
+   * - Invalidates active-project cache if it belonged to the signed-out user.
+   * - Prevents the signed-out user's projects from appearing in another user's UI.
+   */
+  handleUserSignOut(signedOutUserId?: string) {
+    try {
+      if (!signedOutUserId) {
+        try {
+          localStorage.removeItem(ACTIVE_PROJECT_KEY);
+        } catch {}
+        this.projects = [...SAMPLE_PROJECTS];
+        this.persist();
+        return;
+      }
+
+      // 1. Identify all projects belonging to this user
+      const userProjects = this.projects.filter((p) => p.userId === signedOutUserId);
+
+      // 2. Identify and quarantine any unsynchronized local drafts so they are not permanently deleted
+      const unsyncedDrafts = userProjects.filter((p) => p.isLocalOnly === true && !p.migratedFromLocal);
+      if (unsyncedDrafts.length > 0) {
+        const quarantineKey = `obido_studio_unsynced_${signedOutUserId}`;
+        try {
+          localStorage.setItem(quarantineKey, JSON.stringify(unsyncedDrafts));
+        } catch (e) {
+          console.warn('[StorageService] Failed to quarantine unsynced drafts:', e);
+        }
+      }
+
+      // 3. Remove all projects of the signed-out user from active memory and shared storage
+      const remainingProjects = this.projects.filter((p) => p.userId !== signedOutUserId);
+      this.projects = remainingProjects.length > 0 ? remainingProjects : [...SAMPLE_PROJECTS];
+
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.projects));
+      } catch (e) {
+        console.warn('[StorageService] Failed to persist cleaned projects on signout:', e);
+      }
+
+      // 4. Invalidate active project if it was owned by the signed-out user
+      try {
+        const activeId = localStorage.getItem(ACTIVE_PROJECT_KEY);
+        if (activeId) {
+          const wasOwnedBySignoutUser = userProjects.some((p) => p.id === activeId);
+          if (wasOwnedBySignoutUser) {
+            localStorage.removeItem(ACTIVE_PROJECT_KEY);
+          }
+        }
+      } catch {}
+    } catch (err) {
+      console.error('[StorageService] Error during user sign-out cache cleanup:', err);
+      this.projects = [...SAMPLE_PROJECTS];
+    } finally {
+      this.notify();
+    }
+  }
+
+  /**
+   * Restores any quarantined unsynchronized drafts when the user logs back in.
+   */
+  restoreUserUnsyncedDrafts(userId: string) {
+    if (!userId || userId === 'user_default') return;
+    const quarantineKey = `obido_studio_unsynced_${userId}`;
+    try {
+      const stored = localStorage.getItem(quarantineKey);
+      if (stored) {
+        const drafts: Project[] = JSON.parse(stored);
+        if (Array.isArray(drafts) && drafts.length > 0) {
+          const existingIds = new Set(this.projects.map((p) => p.id));
+          const newDrafts = drafts.filter((d) => !existingIds.has(d.id));
+          if (newDrafts.length > 0) {
+            this.projects = [...newDrafts, ...this.projects];
+            this.persist();
+          }
+        }
+        localStorage.removeItem(quarantineKey);
+      }
+    } catch (e) {
+      console.warn('[StorageService] Failed to restore unsynced drafts:', e);
+    }
+  }
+
   async queryProjects(userId?: string, shouldSimulateError: boolean = false): Promise<Project[]> {
     if (shouldSimulateError) {
       throw new Error('Unable to retrieve projects from database service. Please check your connection.');
+    }
+
+    if (userId) {
+      this.restoreUserUnsyncedDrafts(userId);
     }
 
     // Cloud persistence path: when authenticated with a real cloud UID, query Firestore

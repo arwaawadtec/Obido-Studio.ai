@@ -40,8 +40,12 @@ export const OnboardingPage: React.FC = () => {
       useCase,
       experienceLevel,
       language: selectedLang,
-      initialIdea: skipIdea ? undefined : initialIdea.trim() || undefined,
     };
+
+    const trimmedIdea = initialIdea.trim();
+    if (!skipIdea && trimmedIdea) {
+      preferences.initialIdea = trimmedIdea;
+    }
 
     await auth.completeOnboarding(preferences);
     setIsSubmitting(false);

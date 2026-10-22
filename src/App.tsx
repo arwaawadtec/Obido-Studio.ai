@@ -13,6 +13,7 @@ import { LandingPage } from './components/landing/LandingPage';
 import { SignInPage } from './components/auth/SignInPage';
 import { SignUpPage } from './components/auth/SignUpPage';
 import { ForgotPasswordPage } from './components/auth/ForgotPasswordPage';
+import { ResetPasswordPage } from './components/auth/ResetPasswordPage';
 import { OnboardingPage } from './components/onboarding/OnboardingPage';
 import { Dashboard } from './components/dashboard/Dashboard';
 import { Workspace } from './components/workspace/Workspace';
@@ -121,6 +122,11 @@ export default function App() {
   // Route 4: Forgot Password
   if (currentRoute.path === '/forgot-password') {
     return <ForgotPasswordPage />;
+  }
+
+  // Route 4b: Password Reset Completion
+  if (currentRoute.path === '/reset-password') {
+    return <ResetPasswordPage oobCode={(currentRoute as any).oobCode} />;
   }
 
   // Route 5: Onboarding
