@@ -107,23 +107,18 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Connection test on boot per skill instructions
+// Connection test helper
 export async function testConnection(): Promise<boolean> {
   if (!isFirebaseAvailable || !db) return false;
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
     return true;
   } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.warn('[Firebase] Client is offline or database unreachable. Please check your Firebase configuration.');
+    if (isOfflineError(error)) {
+      console.warn('[Firebase] Client is offline or backend temporarily unreachable.');
       return false;
     }
-    // Permission denied on dummy doc is normal since test/connection is protected by default deny
+    // Permission denied on dummy doc is expected because test/connection is protected by default deny rules
     return true;
   }
-}
-
-// Run test on load if configured
-if (isFirebaseAvailable) {
-  testConnection().catch(() => {});
 }

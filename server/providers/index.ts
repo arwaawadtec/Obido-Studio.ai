@@ -37,6 +37,19 @@ class ProviderRegistry {
     return provider;
   }
 
+  getFallbackProvider(excludeId: string): AIProviderAdapter | null {
+    for (const [id, provider] of this.providers.entries()) {
+      if (id !== excludeId && provider.isAvailable()) {
+        return provider;
+      }
+    }
+    return null;
+  }
+
+  hasFallbackProvider(excludeId: string): boolean {
+    return this.getFallbackProvider(excludeId) !== null;
+  }
+
   listProviders(): Array<{ id: string; name: string; available: boolean }> {
     return Array.from(this.providers.values()).map((p) => ({
       id: p.id,
@@ -48,3 +61,5 @@ class ProviderRegistry {
 
 export const aiRegistry = new ProviderRegistry();
 export const getAIProvider = (providerId?: string) => aiRegistry.getProvider(providerId);
+export const getFallbackProvider = (excludeId: string) => aiRegistry.getFallbackProvider(excludeId);
+export const hasFallbackProvider = (excludeId: string) => aiRegistry.hasFallbackProvider(excludeId);

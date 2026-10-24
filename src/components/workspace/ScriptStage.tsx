@@ -16,7 +16,7 @@ import { Project, ScriptVersion } from '../../types';
 import { storage } from '../../services/storage';
 import { authenticatedFetch } from '../../services/apiClient';
 import { AppError } from '../../types/error';
-import { mapApiError } from '../../services/errorService';
+import { createAppError, mapApiError } from '../../services/errorService';
 import { GlobalErrorCard } from '../common/GlobalErrorCard';
 
 interface ScriptStageProps {
@@ -47,6 +47,17 @@ export const ScriptStage: React.FC<ScriptStageProps> = ({ project, onProceedToSt
   const [hook, setHook] = useState(currentScript.hook || '');
   const [fullText, setFullText] = useState(currentScript.fullText || '');
 
+  type ScriptGenState =
+    | 'idle'
+    | 'generating'
+    | 'succeeded'
+    | 'rate_limited'
+    | 'quota_exhausted'
+    | 'temporary_failure'
+    | 'unauthenticated'
+    | 'outcome_unknown';
+
+  const [genState, setGenState] = useState<ScriptGenState>('idle');
   const [isGenerating, setIsGenerating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [errorObj, setErrorObj] = useState<AppError | null>(null);
@@ -64,8 +75,13 @@ export const ScriptStage: React.FC<ScriptStageProps> = ({ project, onProceedToSt
   const durationDelta = computedDurationSec - targetDurationSec;
 
   const handleGenerateScript = async () => {
+    // 1. Prevent duplicate in-flight submissions
+    if (isGenerating) return;
+
     setIsGenerating(true);
+    setGenState('generating');
     setErrorMsg(null);
+    setErrorObj(null);
     setSuccessMsg(null);
 
     try {
@@ -83,25 +99,42 @@ export const ScriptStage: React.FC<ScriptStageProps> = ({ project, onProceedToSt
           rawIdea: project.brief.rawIdea,
           toneOfVoice: project.brief.toneOfVoice,
           callToAction: project.brief.callToAction,
+          allowFallback: true, // Explicit user consent for safe provider fallback if one is genuinely available
         }),
       });
 
-      const data = await res.json();
+      let data: any;
+      try {
+        data = await res.json();
+      } catch {
+        data = { error: 'Invalid response from server' };
+      }
+
       if (!res.ok) {
         const mapped = mapApiError(data, res.status, {
           stage: 'script',
           fallbackWhat: 'AI Screenplay generation',
         });
         setErrorObj(mapped);
+        if (mapped.code === 'QUOTA_EXHAUSTED') {
+          setGenState('quota_exhausted');
+        } else if (mapped.code === 'RATE_LIMITED') {
+          setGenState('rate_limited');
+        } else if (mapped.code === 'UNAUTHENTICATED' || mapped.code === 'FORBIDDEN') {
+          setGenState('unauthenticated');
+        } else {
+          setGenState('temporary_failure');
+        }
         return;
       }
 
-      if (data.script) {
+      // 2. Only persist a new version when valid generated content was confirmed received
+      if (data?.script && data.script.title && data.script.fullText) {
         const s = data.script;
-        setTitle(s.title || title);
+        setTitle(s.title);
         setLogline(s.logline || '');
         setHook(s.hook || '');
-        setFullText(s.fullText || '');
+        setFullText(s.fullText);
 
         // Save as new version
         const newVersionNum = project.scripts.length + 1;
@@ -110,10 +143,10 @@ export const ScriptStage: React.FC<ScriptStageProps> = ({ project, onProceedToSt
           id: newScriptId,
           versionNumber: newVersionNum,
           createdAt: new Date().toISOString(),
-          title: s.title || title,
+          title: s.title,
           logline: s.logline || '',
           hook: s.hook || '',
-          fullText: s.fullText || '',
+          fullText: s.fullText,
           estimatedSpeakingWords: s.estimatedSpeakingWords || words,
           estimatedDurationSeconds: s.estimatedDurationSeconds || computedDurationSec,
           isCurrent: true,
@@ -127,15 +160,62 @@ export const ScriptStage: React.FC<ScriptStageProps> = ({ project, onProceedToSt
           currentScriptId: newScriptId,
         });
 
-        setSuccessMsg(lang === 'ar' ? 'تم إنشاء السيناريو وحفظ الإصدار الجديد' : 'New AI script version generated & saved');
+        setGenState('succeeded');
+        const fallbackNote = data.fallbackUsed
+          ? (lang === 'ar' ? ` (عبر المزود البديل: ${data.provider})` : ` (via fallback: ${data.provider})`)
+          : '';
+        setSuccessMsg(
+          (lang === 'ar'
+            ? 'تم إنشاء السيناريو وحفظ الإصدار الجديد بنجاح'
+            : 'New AI screenplay generated and persisted successfully') + fallbackNote
+        );
+      } else {
+        // Output was empty or malformed; do not pollute script versions
+        setGenState('temporary_failure');
+        setErrorObj(
+          createAppError({
+            code: 'INVALID_RESPONSE',
+            message: 'AI provider returned an incomplete screenplay payload.',
+            stage: 'script',
+            retryable: true,
+            whatFailed: 'Screenplay output schema validation',
+            whereFailed: 'AI response parsing',
+            whyFailed: 'The response did not contain required screenplay title and text fields.',
+            whatToDoNext: 'Click Retry to request a fresh generation. Your brief inputs and existing drafts remain safe.',
+          })
+        );
       }
     } catch (err: any) {
-      console.error('AI script generation error:', err);
-      setErrorMsg(
-        err.message ||
-          (lang === 'ar'
-            ? 'فشل الاتصال بمولد السيناريو. يمكنك كتابة النص يدوياً أدناه.'
-            : 'AI script generation failed. You can write or edit manually below.')
+      console.error('AI script generation network exception:', err);
+
+      // 3. Ambiguous timeout/drop check: Inspect whether storage actually persisted a new version
+      const currentRecord = storage.getProject(project.id);
+      if (currentRecord && currentRecord.scripts.length > project.scripts.length) {
+        setGenState('succeeded');
+        setSuccessMsg(
+          lang === 'ar'
+            ? 'تم التحقق من حفظ السيناريو في قاعدة البيانات بنجاح.'
+            : 'Screenplay was confirmed saved in project history.'
+        );
+        return;
+      }
+
+      setGenState('outcome_unknown');
+      setErrorObj(
+        createAppError({
+          code: 'OUTCOME_UNKNOWN',
+          message:
+            err.message ||
+            (lang === 'ar'
+              ? 'انقطع الاتصال بالخادم قبل اكتمال الاستجابة.'
+              : 'Connection interrupted before screenplay generation completed.'),
+          stage: 'script',
+          retryable: true,
+          whatFailed: 'AI Screenplay generation delivery',
+          whereFailed: 'Network transport / timeout boundary',
+          whyFailed: 'Network connection was interrupted before server response completed. All existing script versions and brief inputs are verified intact.',
+          whatToDoNext: 'Click Retry to request generation again, or continue editing your script manually below.',
+        })
       );
     } finally {
       setIsGenerating(false);

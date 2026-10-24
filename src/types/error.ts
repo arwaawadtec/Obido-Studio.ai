@@ -6,6 +6,8 @@ export interface AppError {
   stage?: string;
   retryable: boolean;
   requestId?: string;
+  retryAfterSeconds?: number;
+  reason?: string;
   whatFailed: string;
   whereFailed: string;
   whyFailed: string;

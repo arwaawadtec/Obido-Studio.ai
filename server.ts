@@ -2,7 +2,7 @@ import express from 'express';
 import http from 'http';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
-import { getAIProvider } from './server/providers';
+import { getAIProvider, aiRegistry } from './server/providers';
 import { normalizeAIError } from './server/resilience/retry';
 
 dotenv.config();
@@ -73,6 +73,13 @@ export interface ApiErrorPayload {
   stage?: string;
   retryable?: boolean;
   requestId?: string;
+  retryAfterSeconds?: number;
+  reason?: string;
+  provider?: string;
+  whatFailed?: string;
+  whereFailed?: string;
+  whyFailed?: string;
+  whatToDoNext?: string;
 }
 
 export function sendApiError(res: express.Response, statusCode: number, payload: ApiErrorPayload) {
@@ -85,7 +92,18 @@ export function sendApiError(res: express.Response, statusCode: number, payload:
     stage: payload.stage,
     retryable: payload.retryable ?? false,
     requestId: reqId,
+    retryAfterSeconds: payload.retryAfterSeconds,
+    reason: payload.reason,
+    provider: payload.provider,
+    whatFailed: payload.whatFailed,
+    whereFailed: payload.whereFailed,
+    whyFailed: payload.whyFailed,
+    whatToDoNext: payload.whatToDoNext,
   };
+
+  if (payload.retryAfterSeconds && payload.retryAfterSeconds > 0) {
+    res.setHeader('Retry-After', String(payload.retryAfterSeconds));
+  }
 
   return res.status(statusCode).json({
     success: false,
@@ -275,28 +293,103 @@ export function requireAuth(req: express.Request, res: express.Response, next: e
 
 // AI Script Generation Endpoint
 app.post('/api/ai/script', requireAuth, async (req, res) => {
+  const requestedProviderId = req.body.providerId || 'gemini';
   try {
-    const provider = getAIProvider(req.body.providerId);
+    const provider = getAIProvider(requestedProviderId);
     if (!provider.isAvailable()) {
       return sendApiError(res, 503, {
         code: 'SERVICE_UNAVAILABLE',
         message: 'AI Provider is not configured on this server. Check your environment settings or use manual editing mode.',
         stage: 'script',
         retryable: false,
+        whatFailed: 'AI Screenplay generation (Provider Unconfigured)',
+        whereFailed: 'Server AI Provider Registry',
+        whyFailed: `The provider "${requestedProviderId}" has no valid API key configured.`,
+        whatToDoNext: 'Ensure GEMINI_API_KEY is configured in your project settings, or compose your script manually below.',
       });
     }
 
     const script = await provider.generateScript(req.body, req.body.model);
-    res.json({ success: true, script });
+    res.json({ success: true, script, provider: provider.id });
   } catch (error: any) {
-    const normalized = normalizeAIError(error, req.body.providerId || 'gemini');
+    const normalized = normalizeAIError(error, requestedProviderId);
     console.error(`[AI Error - /api/ai/script]: ${normalized.code} - ${normalized.message}`);
+
+    // Check for safe provider fallback:
+    // Fallback is only attempted if:
+    // 1. Another eligible provider is genuinely registered and available.
+    // 2. The client explicitly consented to fallback (req.body.allowFallback === true).
+    const allowFallback = req.body.allowFallback === true;
+    const fallbackProvider = aiRegistry.getFallbackProvider(requestedProviderId);
+
+    if (allowFallback && fallbackProvider && fallbackProvider.isAvailable()) {
+      try {
+        console.log(`[AI Fallback] Executing script generation via fallback provider "${fallbackProvider.id}"`);
+        const fallbackScript = await fallbackProvider.generateScript(req.body, req.body.model);
+        return res.json({
+          success: true,
+          script: fallbackScript,
+          provider: fallbackProvider.id,
+          fallbackUsed: true,
+          primaryProvider: requestedProviderId,
+        });
+      } catch (fallbackError: any) {
+        console.warn(`[AI Fallback Failed]: ${fallbackError.message}`);
+      }
+    }
+
+    // Build transparent, typed 4-part error details
+    let whatFailed = 'AI Screenplay generation';
+    let whereFailed = `${normalized.provider.toUpperCase()} AI Provider`;
+    let whyFailed = normalized.message;
+    let whatToDoNext = normalized.retryable
+      ? 'Wait a few moments and click Retry. Your brief and existing script drafts are preserved.'
+      : 'Check your inputs or draft your screenplay manually below.';
+
+    if (normalized.code === 'QUOTA_EXHAUSTED') {
+      whatFailed = 'AI Screenplay generation (Quota Exhausted)';
+      whereFailed = `${normalized.provider.toUpperCase()} Service Quota Limits`;
+      whyFailed = 'The allocated daily or billing quota for Gemini text generation has been exhausted. No alternative AI provider is configured on this server.';
+      whatToDoNext = 'Quota will reset tomorrow. To continue immediately, upgrade your plan in Google AI Studio or compose your script manually in the editor below. Your project and drafts are preserved.';
+    } else if (normalized.code === 'RATE_LIMITED') {
+      whatFailed = 'AI Screenplay generation (Rate Limited)';
+      whereFailed = `${normalized.provider.toUpperCase()} API Rate Limiter`;
+      whyFailed = normalized.retryAfterSeconds
+        ? `Request rate exceeded. Provider requests a cooling delay of ${normalized.retryAfterSeconds} seconds.`
+        : 'Request rate limit reached for Gemini 3.8 Flash.';
+      whatToDoNext = normalized.retryAfterSeconds
+        ? `Please wait ${normalized.retryAfterSeconds} seconds before requesting a new script. Your brief inputs are preserved.`
+        : 'Wait a moment and click Retry. Your brief inputs and existing versions remain intact.';
+    } else if (normalized.code === 'SERVICE_UNAVAILABLE') {
+      whatFailed = 'AI Screenplay generation (Service Overloaded)';
+      whereFailed = `${normalized.provider.toUpperCase()} Model Gateway`;
+      whyFailed = 'The Gemini model server is temporarily overloaded or undergoing maintenance.';
+      whatToDoNext = 'Click Retry to resend the request with exponential backoff. Your brief is preserved.';
+    } else if (normalized.code === 'TIMEOUT') {
+      whatFailed = 'AI Screenplay generation (Timed Out)';
+      whereFailed = 'AI Request Pipeline';
+      whyFailed = 'The screenplay generation took longer than the 25-second timeout boundary.';
+      whatToDoNext = 'Click Retry or simplify your prompt. Existing script versions are safe.';
+    } else if (normalized.code === 'UNAUTHENTICATED') {
+      whatFailed = 'AI Screenplay generation (Authentication)';
+      whereFailed = `${normalized.provider.toUpperCase()} Credential Verification`;
+      whyFailed = 'The server has an invalid or missing GEMINI_API_KEY.';
+      whatToDoNext = 'Ensure GEMINI_API_KEY is configured in your project settings, or compose your script manually below.';
+    }
+
     sendApiError(res, normalized.statusCode, {
       code: normalized.code,
       message: normalized.message,
-      details: normalized.details,
+      details: normalized.details || normalized.message,
       stage: 'script',
       retryable: normalized.retryable,
+      retryAfterSeconds: normalized.retryAfterSeconds,
+      reason: normalized.reason,
+      provider: normalized.provider,
+      whatFailed,
+      whereFailed,
+      whyFailed,
+      whatToDoNext,
     });
   }
 });

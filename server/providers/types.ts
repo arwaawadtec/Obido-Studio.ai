@@ -5,11 +5,13 @@
 
 export type AIErrorCode =
   | 'RATE_LIMITED'
+  | 'QUOTA_EXHAUSTED'
   | 'SERVICE_UNAVAILABLE'
   | 'INVALID_RESPONSE'
   | 'UNAUTHENTICATED'
   | 'TIMEOUT'
   | 'BAD_REQUEST'
+  | 'OUTCOME_UNKNOWN'
   | 'INTERNAL_ERROR';
 
 export interface NormalizedAIError {
@@ -19,6 +21,8 @@ export interface NormalizedAIError {
   statusCode: number;
   provider: string;
   details?: string;
+  retryAfterSeconds?: number;
+  reason?: string;
 }
 
 export interface ScriptGenerationParams {

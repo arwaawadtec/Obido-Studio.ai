@@ -1,5 +1,17 @@
-import React, { useState } from 'react';
-import { AlertCircle, AlertTriangle, RefreshCw, ArrowRight, ShieldAlert, KeyRound, Copy, Check, Terminal } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import {
+  AlertCircle,
+  AlertTriangle,
+  RefreshCw,
+  ArrowRight,
+  ShieldAlert,
+  KeyRound,
+  Copy,
+  Check,
+  Terminal,
+  Clock,
+  ShieldX,
+} from 'lucide-react';
 import { AppError } from '../../types/error';
 import { router } from '../../services/router';
 
@@ -38,6 +50,28 @@ export const GlobalErrorCard: React.FC<GlobalErrorCardProps> = ({
       }
     : error;
 
+  const [secondsRemaining, setSecondsRemaining] = useState<number>(
+    typeof appError.retryAfterSeconds === 'number' && appError.retryAfterSeconds > 0
+      ? appError.retryAfterSeconds
+      : 0
+  );
+
+  useEffect(() => {
+    if (typeof appError.retryAfterSeconds === 'number' && appError.retryAfterSeconds > 0) {
+      setSecondsRemaining(appError.retryAfterSeconds);
+    } else {
+      setSecondsRemaining(0);
+    }
+  }, [appError.retryAfterSeconds, appError.requestId]);
+
+  useEffect(() => {
+    if (secondsRemaining <= 0) return;
+    const timer = setInterval(() => {
+      setSecondsRemaining((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [secondsRemaining]);
+
   const handleCopyRequestId = () => {
     if (appError.requestId) {
       navigator.clipboard.writeText(appError.requestId);
@@ -62,7 +96,12 @@ export const GlobalErrorCard: React.FC<GlobalErrorCardProps> = ({
     }
   };
 
-  const isCritical = appError.code.includes('DISABLED') || appError.code.includes('DENIED') || appError.code.includes('FORBIDDEN');
+  const isQuota = appError.code === 'QUOTA_EXHAUSTED';
+  const isCritical =
+    isQuota ||
+    appError.code.includes('DISABLED') ||
+    appError.code.includes('DENIED') ||
+    appError.code.includes('FORBIDDEN');
 
   return (
     <div
@@ -74,7 +113,7 @@ export const GlobalErrorCard: React.FC<GlobalErrorCardProps> = ({
     >
       {/* Header with Code & Request ID */}
       <div className="flex items-start justify-between gap-3 pb-2.5 border-b border-black/5">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {isCritical ? (
             <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0" />
           ) : (
@@ -83,6 +122,16 @@ export const GlobalErrorCard: React.FC<GlobalErrorCardProps> = ({
           <span className="font-mono text-[11px] font-bold tracking-wide uppercase px-2 py-0.5 rounded bg-black/5 text-[#11152B]">
             {appError.code}
           </span>
+          {isQuota && (
+            <span className="text-[10px] font-bold text-rose-700 bg-rose-100 px-2 py-0.5 rounded border border-rose-200">
+              {lang === 'ar' ? 'الحصة مستنفدة' : 'Daily Quota Exhausted'}
+            </span>
+          )}
+          {appError.code === 'RATE_LIMITED' && (
+            <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded border border-amber-200">
+              {lang === 'ar' ? 'حد الطلبات' : 'Rate Limited'}
+            </span>
+          )}
           {appError.stage && (
             <span className="text-[10px] font-medium text-[#62677A] bg-white/70 px-1.5 py-0.5 rounded border border-black/5">
               Stage: {appError.stage}
@@ -95,7 +144,7 @@ export const GlobalErrorCard: React.FC<GlobalErrorCardProps> = ({
             type="button"
             onClick={handleCopyRequestId}
             title="Copy Request ID for diagnostics"
-            className="flex items-center gap-1 text-[10px] font-mono text-[#62677A] hover:text-[#11152B] bg-white/80 px-2 py-0.5 rounded border border-black/10 transition-colors"
+            className="flex items-center gap-1 text-[10px] font-mono text-[#62677A] hover:text-[#11152B] bg-white/80 px-2 py-0.5 rounded border border-black/10 transition-colors shrink-0"
           >
             {copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
             <span>{copied ? 'Copied' : appError.requestId}</span>
@@ -162,14 +211,29 @@ export const GlobalErrorCard: React.FC<GlobalErrorCardProps> = ({
           )}
 
           {appError.retryable && onRetry && (
-            <button
-              type="button"
-              onClick={onRetry}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-[#11152B] bg-white border border-[#E3E6EF] hover:bg-[#F6F7FB] transition-colors"
-            >
-              <RefreshCw className="w-3.5 h-3.5 text-[#62677A]" />
-              <span>Retry</span>
-            </button>
+            secondsRemaining > 0 ? (
+              <button
+                type="button"
+                disabled
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-[#62677A] bg-gray-100 border border-[#E3E6EF] cursor-not-allowed opacity-80"
+              >
+                <Clock className="w-3.5 h-3.5 text-amber-600 animate-spin" />
+                <span>
+                  {lang === 'ar'
+                    ? `إعادة المحاولة بعد ${secondsRemaining} ثانية`
+                    : `Retry in ${secondsRemaining}s`}
+                </span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-[#11152B] bg-white border border-[#E3E6EF] hover:bg-[#F6F7FB] transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5 text-[#62677A]" />
+                <span>{lang === 'ar' ? 'إعادة المحاولة الآن' : 'Retry'}</span>
+              </button>
+            )
           )}
         </div>
 

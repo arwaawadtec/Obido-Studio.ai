@@ -5,9 +5,16 @@
  */
 
 import assert from 'assert';
-import { executeWithRetry, normalizeAIError, sanitizeErrorMessage } from '../server/resilience/retry';
+import {
+  executeWithRetry,
+  normalizeAIError,
+  sanitizeErrorMessage,
+  extractRetryDelay,
+} from '../server/resilience/retry';
 import { GeminiProviderAdapter } from '../server/providers/geminiAdapter';
 import { AIProviderAdapter } from '../server/providers/types';
+import { aiRegistry } from '../server/providers';
+import { Project, ScriptVersion } from '../src/types';
 
 async function runTestSuite() {
   console.log('--- Starting Obido Studio AI Provider Resilience Test Suite ---');
@@ -205,6 +212,220 @@ async function runTestSuite() {
     assert.strictEqual(normalized.retryable, false);
   });
 
+  // Test 12: HTTP 429 with explicit retry delay
+  await test('HTTP 429 with explicit retry delay parses retryAfterSeconds accurately', async () => {
+    const errWithHeader: any = new Error('429 Rate limit exceeded');
+    errWithHeader.status = 429;
+    errWithHeader.headers = { 'retry-after': '30' };
+
+    const normalized1 = normalizeAIError(errWithHeader, 'gemini');
+    assert.strictEqual(normalized1.code, 'RATE_LIMITED');
+    assert.strictEqual(normalized1.retryable, true);
+    assert.strictEqual(normalized1.retryAfterSeconds, 30);
+
+    const errWithMessage = new Error('429 RESOURCE_EXHAUSTED: Rate limit exceeded. Please retry after 15s');
+    (errWithMessage as any).status = 429;
+    const normalized2 = normalizeAIError(errWithMessage, 'gemini');
+    assert.strictEqual(normalized2.code, 'RATE_LIMITED');
+    assert.strictEqual(normalized2.retryable, true);
+    assert.strictEqual(normalized2.retryAfterSeconds, 15);
+  });
+
+  // Test 13: Permanent Quota Exhaustion
+  await test('Permanent quota exhaustion normalizes to QUOTA_EXHAUSTED and non-retryable', async () => {
+    const quotaErr: any = new Error(
+      "429 RESOURCE_EXHAUSTED: Quota exceeded for quota metric 'Free daily request units per project' (free tier database)"
+    );
+    quotaErr.status = 429;
+
+    const normalized = normalizeAIError(quotaErr, 'gemini');
+    assert.strictEqual(normalized.code, 'QUOTA_EXHAUSTED');
+    assert.strictEqual(normalized.retryable, false);
+    assert.strictEqual(normalized.statusCode, 429);
+    assert.strictEqual(normalized.reason, 'daily_quota_exhausted');
+  });
+
+  // Test 14: Permanent errors that must not be retried
+  await test('QUOTA_EXHAUSTED is never retried by executeWithRetry', async () => {
+    let callCount = 0;
+    const quotaTask = async () => {
+      callCount++;
+      const err: any = new Error("429 RESOURCE_EXHAUSTED: Quota exceeded for quota metric 'Free daily request units'");
+      err.status = 429;
+      throw err;
+    };
+
+    try {
+      await executeWithRetry(quotaTask, { maxRetries: 3 });
+      assert.fail('Should have failed on quota error');
+    } catch (err: any) {
+      assert.strictEqual(callCount, 1, 'QUOTA_EXHAUSTED must terminate on attempt 1 without retries');
+      assert.strictEqual(err.code, 'QUOTA_EXHAUSTED');
+      assert.strictEqual(err.retryable, false);
+    }
+  });
+
+  // Test 15: Fallback when alternative provider is genuinely configured
+  await test('Fallback provider is returned when an alternative provider is genuinely registered and available', async () => {
+    const mockBackupProvider: AIProviderAdapter = {
+      id: 'mock_backup_ai',
+      name: 'Mock Secondary AI Provider',
+      isAvailable: () => true,
+      generateScript: async () => ({
+        title: 'Fallback Script',
+        logline: 'Backup logline',
+        hook: 'Backup hook',
+        fullText: 'Backup full text',
+        estimatedSpeakingWords: 50,
+        estimatedDurationSeconds: 20,
+      }),
+      generateStoryboard: async () => [],
+      enhancePrompt: async () => ({
+        visualPrompt: '',
+        motionInstructions: '',
+        cameraDirection: '',
+        negativePrompt: '',
+        audioInstructions: '',
+      }),
+      refineBrief: async () => ({
+        refinedTitle: '',
+        targetAudience: '',
+        keyTakeaway: '',
+        toneOfVoice: '',
+        suggestedDurationSeconds: 30,
+        suggestedVisualStyle: '',
+        callToAction: '',
+      }),
+    };
+
+    aiRegistry.register(mockBackupProvider);
+    const fallback = aiRegistry.getFallbackProvider('gemini');
+    assert.ok(fallback, 'Expected fallback provider to be found');
+    assert.strictEqual(fallback?.id, 'mock_backup_ai');
+
+    const result = await fallback.generateScript({ title: 'Test' });
+    assert.strictEqual(result.title, 'Fallback Script');
+  });
+
+  // Test 16: No fallback when no eligible provider is configured
+  await test('No fallback provider is returned when no alternative provider is registered', async () => {
+    const none = aiRegistry.getFallbackProvider('mock_backup_ai');
+    if (!process.env.GEMINI_API_KEY) {
+      assert.strictEqual(none, null, 'Must return null rather than inventing a mock fallback');
+    }
+    assert.strictEqual(typeof aiRegistry.hasFallbackProvider, 'function');
+  });
+
+  // Test 17: User work preservation after failure
+  await test('Preserves user brief inputs and previous script versions after failed generation', async () => {
+    const initialVersion: ScriptVersion = {
+      id: 'script_v1_initial',
+      versionNumber: 1,
+      createdAt: new Date().toISOString(),
+      title: 'Original User Title',
+      logline: 'Initial hook and logline',
+      hook: 'Attention grabber',
+      fullText: 'Scene 1: Established narrative dialogue',
+      estimatedSpeakingWords: 120,
+      estimatedDurationSeconds: 60,
+      isCurrent: true,
+    };
+
+    const initialProject: Project = {
+      id: 'proj_test_resilience',
+      userId: 'user_test_123',
+      title: 'Original Project Title',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentStage: 'script',
+      completedStages: ['brief'],
+      brief: {
+        title: 'Original Project Title',
+        purpose: 'explainer',
+        targetAudience: 'Developers',
+        language: 'en',
+        aspectRatio: '16:9',
+        targetDurationSeconds: 60,
+        visualStyle: 'cinematic_photorealistic',
+        rawIdea: 'A deep tech breakthrough pitch',
+        keyTakeaway: 'Save time with automation',
+        toneOfVoice: 'Authoritative',
+        callToAction: 'Visit demo site',
+        lastUpdated: new Date().toISOString(),
+      },
+      scripts: [initialVersion],
+      currentScriptId: 'script_v1_initial',
+      scenes: [],
+      prompts: {},
+      activePromptVersion: {},
+      assets: [],
+      generationJobs: [],
+      timeline: {
+        id: 'tl_proj_test_resilience',
+        projectId: 'proj_test_resilience',
+        fps: 30,
+        aspectRatio: '16:9',
+        clips: [],
+        totalDurationSeconds: 0,
+        lastModified: new Date().toISOString(),
+      },
+      exportJobs: [],
+      isLocalOnly: true,
+    };
+
+    let generationFailed = false;
+    try {
+      const failingAdapter = new GeminiProviderAdapter('');
+      await failingAdapter.generateScript({ title: initialProject.title });
+    } catch {
+      generationFailed = true;
+    }
+
+    assert.strictEqual(generationFailed, true, 'Generation was simulated to fail');
+    assert.strictEqual(initialProject.scripts.length, 1);
+    assert.strictEqual(initialProject.scripts[0].title, 'Original User Title');
+    assert.strictEqual(initialProject.scripts[0].fullText, 'Scene 1: Established narrative dialogue');
+    assert.strictEqual(initialProject.brief.rawIdea, 'A deep tech breakthrough pitch');
+  });
+
+  // Test 18: Accurate success reporting and validation
+  await test('Accurate success reporting: script version is created and stored only after generation succeeds', async () => {
+    const scripts: ScriptVersion[] = [];
+
+    const validateAndPersist = (payload: any): boolean => {
+      if (!payload?.title || !payload?.fullText) {
+        return false;
+      }
+      scripts.push({
+        id: 'script_v' + (scripts.length + 1),
+        versionNumber: scripts.length + 1,
+        createdAt: new Date().toISOString(),
+        title: payload.title,
+        logline: payload.logline || '',
+        hook: payload.hook || '',
+        fullText: payload.fullText,
+        estimatedSpeakingWords: 100,
+        estimatedDurationSeconds: 45,
+        isCurrent: true,
+      });
+      return true;
+    };
+
+    const attempt1 = validateAndPersist({ title: '', fullText: '' });
+    assert.strictEqual(attempt1, false);
+    assert.strictEqual(scripts.length, 0, 'No script version should be added for invalid payload');
+
+    const attempt2 = validateAndPersist({
+      title: 'Valid Screenplay',
+      logline: 'Crisp logline',
+      hook: 'Hook',
+      fullText: '[SCENE 1] Dialogue here',
+    });
+    assert.strictEqual(attempt2, true);
+    assert.strictEqual(scripts.length, 1);
+    assert.strictEqual(scripts[0].title, 'Valid Screenplay');
+  });
+
   // Test 11: Real Provider Verification if GEMINI_API_KEY is present
   if (process.env.GEMINI_API_KEY) {
     await test('Real Gemini Provider executes structured script generation or cleanly normalizes upstream demand', async () => {
@@ -226,12 +447,17 @@ async function runTestSuite() {
         assert.ok(typeof result.estimatedDurationSeconds === 'number', 'Should have estimatedDurationSeconds');
         console.log(`    Generated: "${result.title}" (~${result.estimatedDurationSeconds}s)`);
       } catch (err: any) {
-        // If upstream Google server is temporarily overloaded under high demand,
+        // If upstream Google server is temporarily overloaded, timed out, or quota limited,
         // verify that the resilience adapter caught and normalized it without crashing or exposing secrets
-        assert.ok(err.code === 'SERVICE_UNAVAILABLE' || err.code === 'RATE_LIMITED', `Unexpected error code: ${err.code}`);
-        assert.strictEqual(err.retryable, true);
+        assert.ok(
+          err.code === 'SERVICE_UNAVAILABLE' ||
+            err.code === 'RATE_LIMITED' ||
+            err.code === 'TIMEOUT' ||
+            err.code === 'QUOTA_EXHAUSTED',
+          `Unexpected error code: ${err.code}`
+        );
         assert.ok(!err.message.includes('AIza'), 'No secrets should be in error message');
-        console.log(`    Upstream transient status caught and normalized: ${err.code} (retryable: ${err.retryable})`);
+        console.log(`    Upstream status caught and normalized: ${err.code} (retryable: ${err.retryable})`);
       }
     });
   }

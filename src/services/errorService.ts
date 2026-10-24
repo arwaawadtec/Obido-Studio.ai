@@ -308,34 +308,71 @@ export function mapApiError(
   const reqId = data?.error?.requestId || data?.requestId || generateRequestId('api');
 
   if (data?.error && typeof data.error === 'object') {
+    const isQuota = data.error.code === 'QUOTA_EXHAUSTED';
+    const isRateLimited = data.error.code === 'RATE_LIMITED';
+    const retryAfter = typeof data.error.retryAfterSeconds === 'number' ? data.error.retryAfterSeconds : undefined;
+
     return {
-      code: data.error.code || 'API_ERROR',
+      code: data.error.code || (status === 429 ? (isQuota ? 'QUOTA_EXHAUSTED' : 'RATE_LIMITED') : 'API_ERROR'),
       message: data.error.message || 'Server request failed.',
       details: data.error.details,
       field: data.error.field,
       stage: data.error.stage || context.stage,
-      retryable: !!data.error.retryable,
+      retryable: isQuota ? false : !!data.error.retryable,
       requestId: reqId,
+      retryAfterSeconds: retryAfter,
+      reason: data.error.reason,
       whatFailed: data.error.whatFailed || context.fallbackWhat || 'Server API request',
       whereFailed: data.error.whereFailed || `HTTP ${status} endpoint`,
-      whyFailed: data.error.whyFailed || data.error.details || data.error.message || 'Server returned an error',
-      whatToDoNext: data.error.whatToDoNext || (data.error.retryable ? 'Retry in a few moments.' : 'Check your inputs and try again.'),
+      whyFailed:
+        data.error.whyFailed ||
+        (isQuota
+          ? 'Provider daily or billing quota has been exhausted. No alternative provider is configured.'
+          : isRateLimited && retryAfter
+          ? `Provider rate limit reached. A cooling period of ${retryAfter} seconds is required.`
+          : data.error.details || data.error.message || 'Server returned an error'),
+      whatToDoNext:
+        data.error.whatToDoNext ||
+        (isQuota
+          ? 'Wait for the daily quota reset, upgrade your plan in Google AI Studio, or draft manually below. Your work is preserved.'
+          : isRateLimited && retryAfter
+          ? `Please wait ${retryAfter} seconds before requesting another generation.`
+          : data.error.retryable
+          ? 'Wait a few moments and click Retry. Your inputs are preserved.'
+          : 'Check your inputs and try again.'),
       action: data.error.action,
     };
   }
 
   const rawMessage = typeof data?.error === 'string' ? data.error : data?.message || 'Server request failed';
-  const code = data?.code || (status === 401 ? 'UNAUTHENTICATED' : status === 403 ? 'FORBIDDEN' : status === 429 ? 'RATE_LIMITED' : status >= 500 ? 'SERVER_ERROR' : 'API_ERROR');
+  const isQuota = status === 429 && (rawMessage.includes('quota') || rawMessage.includes('Quota') || rawMessage.includes('metric'));
+  const code =
+    data?.code ||
+    (status === 401
+      ? 'UNAUTHENTICATED'
+      : status === 403
+      ? 'FORBIDDEN'
+      : status === 429
+      ? (isQuota ? 'QUOTA_EXHAUSTED' : 'RATE_LIMITED')
+      : status >= 500
+      ? 'SERVER_ERROR'
+      : 'API_ERROR');
 
   return createAppError({
     code,
     message: rawMessage,
     stage: context.stage,
-    retryable: status >= 500 || status === 429,
+    retryable: status >= 500 || (status === 429 && !isQuota),
     requestId: reqId,
     whatFailed: context.fallbackWhat || 'API endpoint execution',
     whereFailed: `Server API (Status ${status})`,
-    whyFailed: rawMessage,
-    whatToDoNext: status >= 500 ? 'The server encountered a temporary error. Please retry shortly.' : 'Review request details and verify your session.',
+    whyFailed: isQuota
+      ? 'AI provider daily quota limit reached.'
+      : rawMessage,
+    whatToDoNext: isQuota
+      ? 'Wait for daily quota reset, upgrade your AI Studio project plan, or compose your script manually.'
+      : status >= 500
+      ? 'The server encountered a temporary error. Please retry shortly.'
+      : 'Review request details and verify your session.',
   });
 }
