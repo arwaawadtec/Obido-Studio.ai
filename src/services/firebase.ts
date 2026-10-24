@@ -1,6 +1,16 @@
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import { getAuth, Auth } from 'firebase/auth';
-import { getFirestore, Firestore, doc, getDocFromServer, setLogLevel } from 'firebase/firestore';
+import {
+  getFirestore,
+  initializeFirestore,
+  Firestore,
+  doc,
+  getDocFromServer,
+  setLogLevel,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  memoryLocalCache,
+} from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -39,8 +49,32 @@ let isConfigured = false;
 try {
   if (firebaseConfig && firebaseConfig.apiKey && firebaseConfig.projectId && firebaseConfig.projectId !== 'remixed-project-id') {
     app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-    // Critical: The app will break without using firestoreDatabaseId per skill instructions
-    dbInstance = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
+    
+    // Configure cache and transport for sandboxed iframe/browser environments
+    const isBrowser = typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined';
+    let localCache: any;
+    try {
+      localCache = isBrowser
+        ? persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+        : memoryLocalCache();
+    } catch {
+      localCache = memoryLocalCache();
+    }
+
+    try {
+      dbInstance = initializeFirestore(
+        app,
+        {
+          experimentalForceLongPolling: true,
+          localCache,
+        },
+        (firebaseConfig as any).firestoreDatabaseId
+      );
+    } catch {
+      // Fallback if initializeFirestore was already called for this FirebaseApp instance
+      dbInstance = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
+    }
+
     try {
       setLogLevel('silent');
     } catch {}

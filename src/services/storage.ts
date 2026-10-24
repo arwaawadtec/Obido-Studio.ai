@@ -1,5 +1,12 @@
-import { Project, VideoTemplate, WorkflowStage, Scene, PromptVersion, Asset, GenerationJob, TimelineClip } from '../types';
+import { Project, VideoTemplate, WorkflowStage, Scene, Shot, PromptVersion, Asset, GenerationJob, TimelineClip } from '../types';
 import { firestoreService } from './firestoreService';
+import {
+  migrateProjectToShots,
+  calculateSceneDuration,
+  getShotsForScene,
+  mapLegacyFraming,
+  mapLegacyCameraMovement,
+} from './shotMigration';
 
 const STORAGE_KEY = 'obido_studio_projects_v1';
 const ACTIVE_PROJECT_KEY = 'obido_studio_active_project_id';
@@ -457,18 +464,19 @@ class StorageService {
   private init() {
     try {
       if (typeof localStorage === 'undefined') {
-        this.projects = SAMPLE_PROJECTS;
+        this.projects = SAMPLE_PROJECTS.map((p) => migrateProjectToShots(p));
         return;
       }
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        this.projects = JSON.parse(stored);
+        const raw = JSON.parse(stored);
+        this.projects = Array.isArray(raw) ? raw.map((p: Project) => migrateProjectToShots(p)) : [];
       } else {
-        this.projects = SAMPLE_PROJECTS;
+        this.projects = SAMPLE_PROJECTS.map((p) => migrateProjectToShots(p));
         this.persist();
       }
     } catch {
-      this.projects = SAMPLE_PROJECTS;
+      this.projects = SAMPLE_PROJECTS.map((p) => migrateProjectToShots(p));
     }
   }
 
@@ -603,7 +611,8 @@ class StorageService {
     // Cloud persistence path: when authenticated with a real cloud UID, query Firestore
     if (firestoreService.isAvailable() && userId && userId !== 'user_default' && !userId.startsWith('user_demo_')) {
       try {
-        const cloudProjects = await firestoreService.getProjects(userId);
+        const rawCloudProjects = await firestoreService.getProjects(userId);
+        const cloudProjects = rawCloudProjects.map((p) => migrateProjectToShots(p));
         // Update local memory cache with latest cloud documents
         const otherProjects = this.projects.filter((p) => p.userId !== userId);
         this.projects = [...otherProjects, ...cloudProjects];
@@ -675,6 +684,7 @@ class StorageService {
       userId: finalOwnerId,
       title: briefData.title || 'Untitled Video Project',
       description: briefData.rawIdea?.substring(0, 120) || 'New Obido Studio production project',
+      schemaVersion: 2,
       currentStage: 'brief',
       completedStages: [],
       createdAt: new Date().toISOString(),
@@ -697,6 +707,7 @@ class StorageService {
       },
       scripts: [],
       scenes: [],
+      shots: [],
       prompts: {},
       activePromptVersion: {},
       assets: [],
@@ -825,14 +836,44 @@ class StorageService {
     if (!project) return undefined;
 
     const sceneNumber = project.scenes.length + 1;
+    const sceneId = 'sc_' + Math.random().toString(36).substring(2, 9);
+    const duration = Math.max(1, scene.estimatedDurationSeconds || 5);
+    const defaultShotId = `shot_${sceneId}_1`;
+
+    const initialShot: Shot = {
+      id: defaultShotId,
+      projectId,
+      sceneId,
+      shotNumber: 1,
+      name: scene.narrativePurpose ? `${scene.narrativePurpose} (Shot 1)` : `Scene ${sceneNumber} - Shot 1`,
+      durationSeconds: duration,
+      visualIntent: scene.visualDescription || '',
+      framing: mapLegacyFraming(scene.cameraFraming),
+      cameraAngle: 'eye_level',
+      cameraMovement: mapLegacyCameraMovement(scene.cameraFraming),
+      dialogueSnippet: scene.narrationDialogue || undefined,
+      voiceoverSnippet: scene.narrationDialogue || undefined,
+      status: 'draft',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
     const newScene: Scene = {
       ...scene,
-      id: 'sc_' + Math.random().toString(36).substring(2, 9),
+      id: sceneId,
       sceneNumber,
+      shotIds: [defaultShotId],
+      totalDurationSeconds: duration,
+      estimatedDurationSeconds: duration,
     };
 
     const updatedScenes = [...project.scenes, newScene];
-    this.updateProject(projectId, { scenes: updatedScenes });
+    const updatedShots = [...(project.shots || []), initialShot];
+
+    this.updateProject(projectId, {
+      scenes: updatedScenes,
+      shots: updatedShots,
+    });
     return newScene;
   }
 
@@ -840,7 +881,21 @@ class StorageService {
     const project = this.getProject(projectId);
     if (!project) return;
 
-    const updatedScenes = project.scenes.map((sc) => (sc.id === sceneId ? { ...sc, ...updates } : sc));
+    const sceneShots = (project.shots || []).filter((s) => s.sceneId === sceneId);
+    let totalDuration = updates.estimatedDurationSeconds;
+    if (sceneShots.length > 0) {
+      totalDuration = sceneShots.reduce((sum, s) => sum + (Number(s.durationSeconds) || 0), 0);
+    }
+
+    const updatedScenes = project.scenes.map((sc) =>
+      sc.id === sceneId
+        ? {
+            ...sc,
+            ...updates,
+            totalDurationSeconds: totalDuration ?? sc.totalDurationSeconds ?? sc.estimatedDurationSeconds,
+          }
+        : sc
+    );
     this.updateProject(projectId, { scenes: updatedScenes });
   }
 
@@ -848,10 +903,16 @@ class StorageService {
     const project = this.getProject(projectId);
     if (!project) return;
 
-    const filtered = project.scenes.filter((sc) => sc.id !== sceneId);
+    const filteredScenes = project.scenes.filter((sc) => sc.id !== sceneId);
     // Re-index scene numbers cleanly
-    const reindexed = filtered.map((sc, i) => ({ ...sc, sceneNumber: i + 1 }));
-    this.updateProject(projectId, { scenes: reindexed });
+    const reindexedScenes = filteredScenes.map((sc, i) => ({ ...sc, sceneNumber: i + 1 }));
+    // Cascade delete child shots
+    const filteredShots = (project.shots || []).filter((sh) => sh.sceneId !== sceneId);
+
+    this.updateProject(projectId, {
+      scenes: reindexedScenes,
+      shots: filteredShots,
+    });
   }
 
   reorderScenes(projectId: string, sourceIndex: number, destinationIndex: number) {
@@ -864,6 +925,195 @@ class StorageService {
 
     const reindexed = scenes.map((sc, i) => ({ ...sc, sceneNumber: i + 1 }));
     this.updateProject(projectId, { scenes: reindexed });
+  }
+
+  // Shot management
+  addShot(projectId: string, sceneId: string, shotData: Partial<Shot>): Shot | undefined {
+    const project = this.getProject(projectId);
+    if (!project) return undefined;
+
+    const scene = project.scenes.find((s) => s.id === sceneId);
+    if (!scene) return undefined;
+
+    const existingSceneShots = (project.shots || []).filter((s) => s.sceneId === sceneId);
+    const shotNumber = existingSceneShots.length + 1;
+    const shotId = `shot_${sceneId}_${Math.random().toString(36).substring(2, 8)}`;
+    const durationSeconds = Math.max(1, Number(shotData.durationSeconds) || 5);
+
+    const newShot: Shot = {
+      id: shotId,
+      projectId,
+      sceneId,
+      shotNumber,
+      name: shotData.name || `${scene.narrativePurpose || 'Scene'} - Take ${shotNumber}`,
+      durationSeconds,
+      visualIntent: shotData.visualIntent || scene.visualDescription || '',
+      framing: shotData.framing || 'medium',
+      cameraAngle: shotData.cameraAngle || 'eye_level',
+      cameraMovement: shotData.cameraMovement || 'static',
+      dialogueSnippet: shotData.dialogueSnippet,
+      voiceoverSnippet: shotData.voiceoverSnippet,
+      status: shotData.status || 'draft',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const updatedShots = [...(project.shots || []), newShot];
+    const updatedShotIds = [...(scene.shotIds || existingSceneShots.map((s) => s.id)), shotId];
+    const totalDurationSeconds = calculateSceneDuration(scene, updatedShots);
+
+    const updatedScenes = project.scenes.map((s) =>
+      s.id === sceneId
+        ? {
+            ...s,
+            shotIds: updatedShotIds,
+            totalDurationSeconds,
+            estimatedDurationSeconds: totalDurationSeconds,
+          }
+        : s
+    );
+
+    this.updateProject(projectId, {
+      scenes: updatedScenes,
+      shots: updatedShots,
+    });
+
+    return newShot;
+  }
+
+  updateShot(projectId: string, shotId: string, updates: Partial<Shot>): Shot | undefined {
+    const project = this.getProject(projectId);
+    if (!project) return undefined;
+
+    const existingShot = (project.shots || []).find((s) => s.id === shotId);
+    if (!existingShot) return undefined;
+
+    const updatedShot: Shot = {
+      ...existingShot,
+      ...updates,
+      durationSeconds: updates.durationSeconds !== undefined ? Math.max(1, Number(updates.durationSeconds) || 1) : existingShot.durationSeconds,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const updatedShots = (project.shots || []).map((s) => (s.id === shotId ? updatedShot : s));
+
+    // Recalculate parent scene's totalDurationSeconds
+    const sceneId = existingShot.sceneId;
+    const scene = project.scenes.find((s) => s.id === sceneId);
+    let updatedScenes = project.scenes;
+
+    if (scene) {
+      const totalDurationSeconds = calculateSceneDuration(scene, updatedShots);
+      updatedScenes = project.scenes.map((s) =>
+        s.id === sceneId
+          ? {
+              ...s,
+              totalDurationSeconds,
+              estimatedDurationSeconds: totalDurationSeconds,
+            }
+          : s
+      );
+    }
+
+    this.updateProject(projectId, {
+      shots: updatedShots,
+      scenes: updatedScenes,
+    });
+
+    return updatedShot;
+  }
+
+  deleteShot(projectId: string, shotId: string): boolean {
+    const project = this.getProject(projectId);
+    if (!project) return false;
+
+    const existingShot = (project.shots || []).find((s) => s.id === shotId);
+    if (!existingShot) return false;
+
+    const sceneId = existingShot.sceneId;
+    const scene = project.scenes.find((s) => s.id === sceneId);
+
+    // Filter out deleted shot
+    const filteredShots = (project.shots || []).filter((s) => s.id !== shotId);
+    // Reindex shot numbers within this scene
+    const reindexedShots = filteredShots.map((s) => {
+      if (s.sceneId === sceneId) {
+        const indexInScene = filteredShots.filter((item) => item.sceneId === sceneId).indexOf(s);
+        return { ...s, shotNumber: indexInScene + 1 };
+      }
+      return s;
+    });
+
+    let updatedScenes = project.scenes;
+    if (scene) {
+      const updatedShotIds = (scene.shotIds || []).filter((id) => id !== shotId);
+      const totalDurationSeconds = calculateSceneDuration(scene, reindexedShots);
+      updatedScenes = project.scenes.map((s) =>
+        s.id === sceneId
+          ? {
+              ...s,
+              shotIds: updatedShotIds,
+              totalDurationSeconds,
+              estimatedDurationSeconds: totalDurationSeconds,
+            }
+          : s
+      );
+    }
+
+    this.updateProject(projectId, {
+      shots: reindexedShots,
+      scenes: updatedScenes,
+    });
+
+    return true;
+  }
+
+  reorderShots(projectId: string, sceneId: string, sourceIndex: number, destinationIndex: number): boolean {
+    const project = this.getProject(projectId);
+    if (!project) return false;
+
+    const scene = project.scenes.find((s) => s.id === sceneId);
+    if (!scene) return false;
+
+    const sceneShots = getShotsForScene(project, sceneId);
+    if (
+      sourceIndex < 0 ||
+      sourceIndex >= sceneShots.length ||
+      destinationIndex < 0 ||
+      destinationIndex >= sceneShots.length
+    ) {
+      return false;
+    }
+
+    const reordered = [...sceneShots];
+    const [moved] = reordered.splice(sourceIndex, 1);
+    reordered.splice(destinationIndex, 0, moved);
+
+    // Update shotNumbers and gather new shotIds
+    const newShotIds = reordered.map((s, idx) => {
+      s.shotNumber = idx + 1;
+      return s.id;
+    });
+
+    const otherShots = (project.shots || []).filter((s) => s.sceneId !== sceneId);
+    const updatedShots = [...otherShots, ...reordered];
+
+    const updatedScenes = project.scenes.map((s) =>
+      s.id === sceneId ? { ...s, shotIds: newShotIds } : s
+    );
+
+    this.updateProject(projectId, {
+      shots: updatedShots,
+      scenes: updatedScenes,
+    });
+
+    return true;
+  }
+
+  getShotsForScene(projectId: string, sceneId: string): Shot[] {
+    const project = this.getProject(projectId);
+    if (!project) return [];
+    return getShotsForScene(project, sceneId);
   }
 
   // Assets & Jobs

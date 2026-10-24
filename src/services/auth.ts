@@ -13,7 +13,7 @@ import {
   User as FirebaseUser,
 } from 'firebase/auth';
 import { firebaseAuth, isFirebaseAvailable } from './firebase';
-import { firestoreService } from './firestoreService';
+import { firestoreService, UserProfileResult } from './firestoreService';
 import { User, UserPreferences } from '../types';
 import { AppError, AuthActionResult } from '../types/error';
 import { mapFirebaseError, createAppError } from './errorService';
@@ -94,6 +94,9 @@ class AuthService {
   private currentUser: User | null = null;
   private listeners: Array<() => void> = [];
   private isAuthReady = false;
+  private syncEpoch = 0;
+  private pendingSyncUid: string | null = null;
+  private hasPendingProfileSync = false;
 
   constructor() {
     this.init();
@@ -134,6 +137,19 @@ class AuthService {
           }
         }
       });
+
+      // 3. Reconnection & Visibility recovery listeners
+      window.addEventListener('online', () => {
+        this.retryProfileSyncOnReconnect();
+      });
+
+      if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible' && this.hasPendingProfileSync) {
+            this.retryProfileSyncOnReconnect();
+          }
+        });
+      }
     }
 
     if (isFirebaseAvailable && firebaseAuth) {
@@ -182,59 +198,61 @@ class AuthService {
   }
 
   /**
-   * Syncs a Firebase user into application state.
-   * Resilient to transient Firestore read/write errors: never signs out an authenticated user
-   * merely because cloud document persistence encountered a temporary network or permission error.
+   * Safely synchronizes a Firebase user into application state.
+   * Guarantees:
+   * 1. No synthetic overwrite: Never persists default profile if remote read was unavailable or offline.
+   * 2. Explicit read outcomes: Distinguishes confirmed missing document ('not_found') from failed read ('unavailable').
+   * 3. Safe profile creation: Persists default profile ONLY when document absence is positively confirmed.
+   * 4. Race protection: Discards stale sync epochs and checks target UID match before updating state.
+   * 5. Cache integrity: Strictly verifies cached profile belongs to the authenticated UID.
    */
   private async syncFirebaseUser(fbUser: FirebaseUser): Promise<User> {
-    let existing: User | null = null;
+    const currentEpoch = ++this.syncEpoch;
+    const targetUid = fbUser.uid;
+    this.pendingSyncUid = targetUid;
+
+    let readResult: UserProfileResult;
     try {
-      existing = await firestoreService.getUserProfile(fbUser.uid);
+      readResult = await firestoreService.getUserProfileWithStatus(targetUid);
     } catch (e) {
-      console.warn('[AuthService] Firestore profile retrieval deferred:', e);
+      console.warn('[AuthService] Firestore profile retrieval unexpected failure:', e);
+      readResult = { status: 'unavailable', reason: 'exception', error: e };
     }
 
-    // If cloud read was unavailable/offline, check local memory or safeStorage cache
-    if (!existing) {
-      if (this.currentUser && (this.currentUser.id === fbUser.uid || this.currentUser.firebaseUid === fbUser.uid)) {
-        existing = this.currentUser;
-      } else {
-        try {
-          const cachedRaw = safeStorage.getItem(AUTH_USER_KEY);
-          if (cachedRaw) {
-            const parsed = JSON.parse(cachedRaw);
-            if (parsed && (parsed.id === fbUser.uid || parsed.firebaseUid === fbUser.uid)) {
-              existing = parsed;
-            }
-          }
-        } catch (cacheErr) {
-          console.warn('[AuthService] Failed to read cached profile:', cacheErr);
-        }
-      }
+    // Race protection check: if a new sync started or UID changed while awaiting, abort
+    if (this.syncEpoch !== currentEpoch || this.pendingSyncUid !== targetUid) {
+      console.info(`[AuthService] Sync callback for ${targetUid} discarded (epoch ${currentEpoch} superseded)`);
+      return this.currentUser!;
     }
 
     let appUser: User;
 
-    if (existing) {
+    if (readResult.status === 'found' && readResult.user) {
+      // --- CASE A: Confirmed Existing Profile in Firestore ---
+      this.hasPendingProfileSync = false;
+      const existing = readResult.user;
       appUser = {
         ...existing,
-        id: fbUser.uid,
+        id: targetUid,
         email: fbUser.email || existing.email,
         name: fbUser.displayName || existing.name || 'Studio Creator',
         avatar: fbUser.photoURL || existing.avatar,
         authType: 'cloud',
-        firebaseUid: fbUser.uid,
+        firebaseUid: targetUid,
         lastLoginAt: new Date().toISOString(),
       };
-    } else {
+    } else if (readResult.status === 'not_found') {
+      // --- CASE B: Confirmed Absence of Profile Document ---
+      // Positively established that document does not exist. Safe to create and persist default profile.
+      this.hasPendingProfileSync = false;
       appUser = {
-        id: fbUser.uid,
+        id: targetUid,
         name: fbUser.displayName || (fbUser.email?.split('@')[0] ?? 'Studio Creator'),
         email: fbUser.email || '',
         role: 'creator',
         tier: 'pro',
         authType: 'cloud',
-        firebaseUid: fbUser.uid,
+        firebaseUid: targetUid,
         ...(fbUser.photoURL ? { avatar: fbUser.photoURL } : {}),
         hasCompletedOnboarding: false,
         preferences: {
@@ -246,12 +264,73 @@ class AuthService {
         lastLoginAt: new Date().toISOString(),
       };
 
-      // Persist profile to Firestore safely
       try {
         await firestoreService.saveUserProfile(appUser);
       } catch (saveErr) {
-        console.warn('[AuthService] Firestore profile persistence deferred (non-fatal):', saveErr);
+        console.warn('[AuthService] Initial user profile cloud save deferred:', saveErr);
       }
+    } else {
+      // --- CASE C: Read Unavailable (Client offline, network timeout, or unresolved) ---
+      // CRITICAL: NEVER call firestoreService.saveUserProfile()! Do NOT persist default data!
+      this.hasPendingProfileSync = true;
+
+      // Check cache strictly for targetUid
+      let matchingCache: User | null = null;
+      if (this.currentUser && (this.currentUser.id === targetUid || this.currentUser.firebaseUid === targetUid)) {
+        matchingCache = this.currentUser;
+      } else {
+        try {
+          const cachedRaw = safeStorage.getItem(AUTH_USER_KEY);
+          if (cachedRaw) {
+            const parsed = JSON.parse(cachedRaw);
+            if (parsed && (parsed.id === targetUid || parsed.firebaseUid === targetUid)) {
+              matchingCache = parsed;
+            }
+          }
+        } catch (cacheErr) {
+          console.warn('[AuthService] Failed to read cached profile:', cacheErr);
+        }
+      }
+
+      if (matchingCache) {
+        // Provisional session adopting cached state
+        appUser = {
+          ...matchingCache,
+          id: targetUid,
+          email: fbUser.email || matchingCache.email,
+          name: fbUser.displayName || matchingCache.name || 'Studio Creator',
+          avatar: fbUser.photoURL || matchingCache.avatar,
+          authType: 'cloud',
+          firebaseUid: targetUid,
+        };
+      } else {
+        // Ephemeral in-memory fallback for user session without overwriting cloud data
+        appUser = {
+          id: targetUid,
+          name: fbUser.displayName || (fbUser.email?.split('@')[0] ?? 'Studio Creator'),
+          email: fbUser.email || '',
+          role: 'creator',
+          tier: 'pro',
+          authType: 'cloud',
+          firebaseUid: targetUid,
+          ...(fbUser.photoURL ? { avatar: fbUser.photoURL } : {}),
+          hasCompletedOnboarding: false,
+          preferences: {
+            useCase: 'content_creation',
+            experienceLevel: 'intermediate',
+            language: 'en',
+          },
+          createdAt: new Date().toISOString(),
+          lastLoginAt: new Date().toISOString(),
+        };
+        // NOTE: NO saveUserProfile is called!
+      }
+    }
+
+    // Final epoch guard before committing state
+    if (this.syncEpoch !== currentEpoch || this.pendingSyncUid !== targetUid) {
+      console.info(`[AuthService] Stale auth sync callback aborted during commit for ${targetUid}`);
+      return this.currentUser!;
     }
 
     this.currentUser = appUser;
@@ -260,6 +339,46 @@ class AuthService {
       storage.restoreUserUnsyncedDrafts(appUser.id);
     } catch {}
     return appUser;
+  }
+
+  /**
+   * Retries profile synchronization when connectivity is restored or tab regains visibility.
+   */
+  async retryProfileSyncOnReconnect(): Promise<void> {
+    const currentFbUser =
+      isFirebaseAvailable && firebaseAuth?.currentUser
+        ? firebaseAuth.currentUser
+        : (firebaseAuth as any)?.currentUser || null;
+    if (!currentFbUser) return;
+
+    if (this.hasPendingProfileSync || (this.currentUser && this.currentUser.authType === 'cloud')) {
+      try {
+        await this.syncFirebaseUser(currentFbUser);
+        this.notify();
+      } catch (err) {
+        console.warn('[AuthService] Reconnection profile sync deferred:', err);
+      }
+    }
+  }
+
+  public registerReconnectionListeners(): void {
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => {
+        this.retryProfileSyncOnReconnect();
+      });
+
+      if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible' && this.hasPendingProfileSync) {
+            this.retryProfileSyncOnReconnect();
+          }
+        });
+      }
+    }
+  }
+
+  hasPendingSync(): boolean {
+    return this.hasPendingProfileSync;
   }
 
   private notify() {
@@ -736,6 +855,9 @@ class AuthService {
   }
 
   async signOut() {
+    this.syncEpoch++;
+    this.pendingSyncUid = null;
+    this.hasPendingProfileSync = false;
     const previousUserId = this.currentUser?.id;
     if (isFirebaseAvailable && firebaseAuth) {
       try {

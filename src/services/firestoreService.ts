@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromCache,
   getDocs,
   setDoc,
   deleteDoc,
@@ -11,6 +12,16 @@ import {
 } from 'firebase/firestore';
 import { db, isFirebaseAvailable, handleFirestoreError, isOfflineError, OperationType } from './firebase';
 import { Project, User, Asset } from '../types';
+
+export type ProfileReadStatus = 'found' | 'not_found' | 'unavailable';
+
+export interface UserProfileResult {
+  status: ProfileReadStatus;
+  user?: User;
+  source?: 'server' | 'cache';
+  reason?: string;
+  error?: unknown;
+}
 
 /**
  * Recursively sanitizes data before writing to Cloud Firestore.
@@ -81,20 +92,80 @@ export class FirestoreService {
     }
   }
 
-  async getUserProfile(userId: string): Promise<User | null> {
-    if (!this.isAvailable() || !userId) return null;
-    const path = `users/${userId}`;
-    try {
-      const snapshot = await getDoc(doc(db, 'users', userId));
-      if (!snapshot.exists()) return null;
-      return snapshot.data() as User;
-    } catch (error) {
-      if (isOfflineError(error)) {
-        console.warn(`[FirestoreService] Client is offline; deferred profile read for ${path}`);
-        return null;
-      }
-      handleFirestoreError(error, OperationType.GET, path);
+  async getUserProfileWithStatus(userId: string): Promise<UserProfileResult> {
+    if (!this.isAvailable() || !userId) {
+      return { status: 'unavailable', reason: 'Firestore is not initialized or unavailable' };
     }
+    const path = `users/${userId}`;
+    const docRef = doc(db, 'users', userId);
+
+    // If client is online in browser, permit a brief retry for initial connection handshake
+    const isOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
+    const maxAttempts = isOnline ? 2 : 1;
+    let lastOfflineError: unknown = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const snapshot = await getDoc(docRef);
+        if (!snapshot.exists()) {
+          return { status: 'not_found' };
+        }
+        const isFromCache = !!(snapshot.metadata && snapshot.metadata.fromCache);
+        return {
+          status: 'found',
+          user: snapshot.data() as User,
+          source: isFromCache ? 'cache' : 'server',
+        };
+      } catch (error) {
+        if (isOfflineError(error)) {
+          lastOfflineError = error;
+          // If online and first attempt had a transient connection delay, retry once after short backoff
+          if (attempt < maxAttempts) {
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            continue;
+          }
+          break;
+        }
+
+        // Non-offline errors (e.g. permission-denied, unauthenticated, etc.)
+        const errorCode = (error as any)?.code || (error instanceof Error ? error.message : String(error));
+        console.warn(`[FirestoreService] Profile read unresolved for ${path}: ${errorCode}`);
+        return {
+          status: 'unavailable',
+          reason: errorCode,
+          error,
+        };
+      }
+    }
+
+    // Attempt to retrieve from Firestore local cache if available
+    try {
+      const cacheSnap = await getDocFromCache(docRef);
+      if (cacheSnap.exists()) {
+        return {
+          status: 'found',
+          user: cacheSnap.data() as User,
+          source: 'cache',
+        };
+      }
+    } catch {
+      // getDocFromCache failed or cache unavailable in environment
+    }
+
+    console.warn(`[FirestoreService] Client is offline; deferred profile read for ${path}`);
+    return {
+      status: 'unavailable',
+      reason: 'offline',
+      error: lastOfflineError,
+    };
+  }
+
+  async getUserProfile(userId: string): Promise<User | null> {
+    const result = await this.getUserProfileWithStatus(userId);
+    if (result.status === 'found' && result.user) {
+      return result.user;
+    }
+    return null;
   }
 
   // --- Projects ---

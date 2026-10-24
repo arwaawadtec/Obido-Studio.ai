@@ -82,6 +82,62 @@ export interface ScriptVersion {
   notes?: string;
 }
 
+export type ShotFraming =
+  | 'extreme_wide'
+  | 'wide'
+  | 'medium_wide'
+  | 'medium'
+  | 'close_up'
+  | 'extreme_close_up'
+  | 'over_the_shoulder'
+  | 'pov'
+  | 'macro';
+
+export type CameraAngle =
+  | 'eye_level'
+  | 'low_angle'
+  | 'high_angle'
+  | 'dutch_angle'
+  | 'birds_eye'
+  | 'worms_eye';
+
+export type CameraMovement =
+  | 'static'
+  | 'pan_left'
+  | 'pan_right'
+  | 'tilt_up'
+  | 'tilt_down'
+  | 'dolly_in'
+  | 'dolly_out'
+  | 'zoom_in'
+  | 'zoom_out'
+  | 'tracking'
+  | 'crane'
+  | 'handheld'
+  | 'orbital';
+
+export type ShotStatus = 'draft' | 'ready' | 'prompted' | 'generating' | 'approved';
+
+export interface Shot {
+  id: string;
+  projectId: string;
+  sceneId: string;
+  shotNumber: number;
+  name: string;
+  durationSeconds: number;
+  visualIntent: string;
+  framing: ShotFraming;
+  cameraAngle: CameraAngle;
+  cameraMovement: CameraMovement;
+  dialogueSnippet?: string;
+  voiceoverSnippet?: string;
+  activePromptId?: string;
+  activeAssetId?: string;
+  status: ShotStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Scene {
   id: string;
   sceneNumber: number;
@@ -94,11 +150,14 @@ export interface Scene {
   referenceImagePlaceholder?: string;
   associatedAssetId?: string;
   status: 'draft' | 'ready_for_prompt' | 'prompted' | 'generated' | 'approved';
+  shotIds?: string[];
+  totalDurationSeconds?: number;
 }
 
 export interface PromptVersion {
   id: string;
   sceneId: string;
+  shotId?: string;
   versionNumber: number;
   createdAt: string;
   visualPrompt: string;
@@ -115,6 +174,7 @@ export interface Asset {
   id: string;
   projectId: string;
   sceneId?: string;
+  shotId?: string;
   name: string;
   type: 'video' | 'image' | 'audio_voiceover' | 'audio_music' | 'audio_sfx';
   url: string;
@@ -134,6 +194,7 @@ export interface GenerationJob {
   id: string;
   projectId: string;
   sceneId?: string;
+  shotId?: string;
   taskType: 'text_to_video' | 'image_to_video' | 'text_to_speech' | 'music_composition' | 'scene_extension';
   provider: 'gemini_omni' | 'runway_gen3' | 'luma_dream' | 'local_demo';
   modelName: string;
@@ -159,6 +220,7 @@ export interface GenerationJob {
 export interface TimelineClip {
   id: string;
   sceneId: string;
+  shotId?: string;
   assetId?: string;
   track: 'video' | 'voiceover' | 'music' | 'subtitles';
   startTimeSeconds: number;
@@ -216,12 +278,14 @@ export interface Project {
   userId: string;
   title: string;
   description?: string;
+  schemaVersion?: number; // 1 for legacy, 2 for shots domain
   currentStage: WorkflowStage;
   completedStages: WorkflowStage[];
   brief: ProjectBrief;
   scripts: ScriptVersion[];
   currentScriptId?: string;
   scenes: Scene[];
+  shots?: Shot[]; // First-class shot collection
   prompts: Record<string, PromptVersion[]>; // sceneId -> versions
   activePromptVersion: Record<string, string>; // sceneId -> promptId
   assets: Asset[];

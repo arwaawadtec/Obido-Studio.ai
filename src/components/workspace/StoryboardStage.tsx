@@ -15,13 +15,27 @@ import {
   Check,
   Loader2,
   Image as ImageIcon,
+  Film,
+  Clapperboard,
+  Sliders,
 } from 'lucide-react';
-import { Project, Scene } from '../../types';
+import {
+  Project,
+  Scene,
+  Shot,
+  ShotFraming,
+  CameraAngle,
+  CameraMovement,
+} from '../../types';
 import { storage } from '../../services/storage';
 import { authenticatedFetch } from '../../services/apiClient';
 import { AppError } from '../../types/error';
 import { mapApiError } from '../../services/errorService';
 import { GlobalErrorCard } from '../common/GlobalErrorCard';
+import {
+  migrateProjectToShots,
+  getShotsForScene,
+} from '../../services/shotMigration';
 
 interface StoryboardStageProps {
   project: Project;
@@ -38,7 +52,10 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
 
   const scenes = project.scenes || [];
   const targetDurationSec = project.brief.targetDurationSeconds;
-  const totalPlannedDuration = scenes.reduce((sum, s) => sum + (s.estimatedDurationSeconds || 0), 0);
+  const totalPlannedDuration = scenes.reduce(
+    (sum, s) => sum + (s.totalDurationSeconds || s.estimatedDurationSeconds || 0),
+    0
+  );
   const durationDiff = totalPlannedDuration - targetDurationSec;
 
   const handleGenerateFromScript = async () => {
@@ -79,7 +96,7 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
       }
 
       if (data.scenes && Array.isArray(data.scenes)) {
-        const newScenes: Scene[] = data.scenes.map((s: any, idx: number) => ({
+        const rawScenes: Scene[] = data.scenes.map((s: any, idx: number) => ({
           id: 'sc_' + Math.random().toString(36).substring(2, 8),
           sceneNumber: idx + 1,
           narrativePurpose: s.narrativePurpose || `Scene ${idx + 1}`,
@@ -91,11 +108,21 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
           status: 'ready_for_prompt',
         }));
 
-        storage.updateProject(project.id, { scenes: newScenes });
+        const migrated = migrateProjectToShots({
+          ...project,
+          scenes: rawScenes,
+          shots: [],
+        });
+
+        storage.updateProject(project.id, {
+          scenes: migrated.scenes,
+          shots: migrated.shots,
+        });
+
         setFeedback(
           lang === 'ar'
-            ? `تم توليد ${newScenes.length} مشاهد متتالية بنجاح`
-            : `Generated ${newScenes.length} storyboard scenes successfully`
+            ? `تم توليد ${migrated.scenes.length} مشاهد مع لقطات تفصيلية بنجاح`
+            : `Generated ${migrated.scenes.length} scenes with first-class shot lists successfully`
         );
       }
     } catch (err: any) {
@@ -133,7 +160,7 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
   const handleDuplicateScene = (scene: Scene) => {
     storage.addScene(project.id, {
       narrativePurpose: `${scene.narrativePurpose} (Copy)`,
-      estimatedDurationSeconds: scene.estimatedDurationSeconds,
+      estimatedDurationSeconds: scene.totalDurationSeconds || scene.estimatedDurationSeconds,
       visualDescription: scene.visualDescription,
       narrationDialogue: scene.narrationDialogue,
       audioCues: scene.audioCues,
@@ -147,6 +174,30 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
     if (targetIndex >= 0 && targetIndex < scenes.length) {
       storage.reorderScenes(project.id, index, targetIndex);
     }
+  };
+
+  // Shot actions
+  const handleAddShot = (sceneId: string) => {
+    storage.addShot(project.id, sceneId, {
+      durationSeconds: 4,
+      framing: 'medium',
+      cameraAngle: 'eye_level',
+      cameraMovement: 'static',
+      visualIntent: '',
+    });
+  };
+
+  const handleUpdateShot = (shotId: string, updates: Partial<Shot>) => {
+    storage.updateShot(project.id, shotId, updates);
+  };
+
+  const handleDeleteShot = (shotId: string) => {
+    storage.deleteShot(project.id, shotId);
+  };
+
+  const handleMoveShot = (sceneId: string, index: number, direction: 'up' | 'down') => {
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    storage.reorderShots(project.id, sceneId, index, targetIndex);
   };
 
   const handleProceed = () => {
@@ -318,6 +369,13 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
       ) : (
         <div className="space-y-4">
           {scenes.map((scene, index) => {
+            const sceneShots = getShotsForScene(project, scene.id);
+            const sceneTotalDuration =
+              scene.totalDurationSeconds ||
+              (sceneShots.length > 0
+                ? sceneShots.reduce((sum, s) => sum + (s.durationSeconds || 0), 0)
+                : scene.estimatedDurationSeconds || 5);
+
             return (
               <div
                 key={scene.id}
@@ -340,37 +398,16 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {/* Camera Framing Selector */}
-                    <select
-                      value={scene.cameraFraming}
-                      onChange={(e) => handleUpdateScene(scene.id, { cameraFraming: e.target.value as any })}
-                      className="text-xs px-2.5 py-1 bg-[#F6F7FB] border border-[#E3E6EF] rounded-md text-[#11152B] font-medium"
-                    >
-                      <option value="Wide establishing">Wide establishing</option>
-                      <option value="Medium shot">Medium shot</option>
-                      <option value="Close-up">Close-up</option>
-                      <option value="Over-the-shoulder">Over-the-shoulder</option>
-                      <option value="POV / Macro">POV / Macro</option>
-                      <option value="Dynamic tracking">Dynamic tracking</option>
-                    </select>
-
-                    {/* Duration input */}
-                    <div className="flex items-center gap-1 bg-[#F6F7FB] border border-[#E3E6EF] px-2 py-1 rounded-md text-xs font-mono">
-                      <Clock className="w-3 h-3 text-[#62677A]" />
-                      <input
-                        type="number"
-                        min={1}
-                        max={120}
-                        value={scene.estimatedDurationSeconds}
-                        onChange={(e) =>
-                          handleUpdateScene(scene.id, { estimatedDurationSeconds: parseInt(e.target.value, 10) || 1 })
-                        }
-                        className="w-10 bg-transparent text-center font-semibold text-[#11152B] focus:outline-none"
-                      />
-                      <span className="text-[#62677A]">s</span>
+                    {/* Scene Duration indicator */}
+                    <div className="flex items-center gap-1.5 bg-[#F6F7FB] border border-[#E3E6EF] px-2.5 py-1 rounded-md text-xs font-mono">
+                      <Clock className="w-3.5 h-3.5 text-[#62677A]" />
+                      <span className="font-bold text-[#11152B]">{sceneTotalDuration}s</span>
+                      <span className="text-[#62677A] text-[11px]">
+                        ({sceneShots.length} {sceneShots.length === 1 ? 'take' : 'takes'})
+                      </span>
                     </div>
 
-                    {/* Reordering */}
+                    {/* Reordering Scene */}
                     <button
                       type="button"
                       disabled={index === 0}
@@ -416,12 +453,12 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
                   <div className="md:col-span-2 space-y-3">
                     <div>
                       <label className="block text-xs font-semibold text-[#11152B] mb-1">
-                        {lang === 'ar' ? 'الوصف البصري وحركة المشهد' : 'Visual Description & Action'}
+                        {lang === 'ar' ? 'الوصف البصري وحركة المشهد العام' : 'Visual Description & Overall Action'}
                       </label>
                       <textarea
                         value={scene.visualDescription}
                         onChange={(e) => handleUpdateScene(scene.id, { visualDescription: e.target.value })}
-                        rows={3}
+                        rows={2}
                         placeholder="Detailed visual action, camera motion, characters, environment..."
                         className="w-full text-xs p-2.5 bg-white border border-[#E3E6EF] rounded-lg focus:border-[#635BFF] focus:outline-none"
                       />
@@ -456,7 +493,7 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
                     </div>
                   </div>
 
-                  {/* Reference Frame Preview Box (Honest placeholder per rule) */}
+                  {/* Reference Frame Preview Box */}
                   <div className="p-3 bg-[#F6F7FB] border border-[#E3E6EF] rounded-lg flex flex-col justify-between">
                     <div>
                       <div className="flex items-center justify-between mb-2">
@@ -472,12 +509,12 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
                       <div className="aspect-video w-full rounded-md bg-[#11152B] border border-[#E3E6EF] flex flex-col items-center justify-center p-3 text-center text-white relative overflow-hidden group">
                         <div className="absolute inset-0 bg-gradient-to-tr from-[#635BFF]/30 via-transparent to-[#38D9F9]/20" />
                         <div className="relative z-10 flex flex-col items-center">
-                          <Camera className="w-6 h-6 text-[#38D9F9] mb-1" />
-                          <span className="text-[11px] font-semibold text-white">
-                            {scene.cameraFraming}
+                          <Camera className="w-5 h-5 text-[#38D9F9] mb-1" />
+                          <span className="text-[10px] font-semibold text-white">
+                            {scene.cameraFraming || 'Medium shot'}
                           </span>
                           <span className="text-[9px] text-[#E3E6EF]/70 font-mono mt-0.5">
-                            {scene.estimatedDurationSeconds}s · Scene #{scene.sceneNumber}
+                            {sceneTotalDuration}s · Scene #{scene.sceneNumber}
                           </span>
                         </div>
                       </div>
@@ -487,6 +524,227 @@ export const StoryboardStage: React.FC<StoryboardStageProps> = ({ project, onPro
                       <span>{lang === 'ar' ? 'عنصر نائب للمرجع البصري (غير مولّد بعد)' : 'Visual Reference Placeholder (Unrendered)'}</span>
                     </div>
                   </div>
+                </div>
+
+                {/* First-Class Shot List Section */}
+                <div className="pt-3 border-t border-[#E3E6EF]/80 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Clapperboard className="w-4 h-4 text-[#635BFF]" />
+                      <span className="text-xs font-bold text-[#11152B]">
+                        {lang === 'ar' ? 'قائمة اللقطات' : 'Shot List'}
+                      </span>
+                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#F6F7FB] border border-[#E3E6EF] text-[#62677A] font-mono">
+                        {sceneShots.length} {lang === 'ar' ? 'لقطات' : sceneShots.length === 1 ? 'shot' : 'shots'} · {sceneTotalDuration}s
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleAddShot(scene.id)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-[#635BFF] bg-[#635BFF]/10 hover:bg-[#635BFF]/15 rounded-lg transition-colors cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>{lang === 'ar' ? 'إضافة لقطة' : 'Add Shot'}</span>
+                    </button>
+                  </div>
+
+                  {sceneShots.length === 0 ? (
+                    <div className="p-4 bg-[#F8F9FD] border border-dashed border-[#D1D5E5] rounded-lg text-center space-y-1">
+                      <p className="text-xs font-medium text-[#62677A]">
+                        {lang === 'ar' ? 'لا توجد لقطات في هذا المشهد بعد' : 'No shots defined for this scene yet.'}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => handleAddShot(scene.id)}
+                        className="text-xs font-semibold text-[#635BFF] hover:underline cursor-pointer"
+                      >
+                        {lang === 'ar' ? '+ أضف أول لقطة كاميرا' : '+ Add first camera shot'}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {sceneShots.map((shot, shotIndex) => (
+                        <div
+                          key={shot.id}
+                          className="p-3 bg-[#FAFBFD] hover:bg-white border border-[#E3E6EF] hover:border-[#D1D5E5] rounded-lg space-y-2.5 transition-all shadow-2xs"
+                        >
+                          {/* Shot Header Row */}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 flex-1">
+                              <span className="px-2 py-0.5 rounded bg-[#11152B] text-white font-mono text-[10px] font-bold shrink-0">
+                                Shot {scene.sceneNumber}.{shot.shotNumber}
+                              </span>
+                              <input
+                                type="text"
+                                value={shot.name}
+                                onChange={(e) => handleUpdateShot(shot.id, { name: e.target.value })}
+                                placeholder="Shot title or camera take..."
+                                className="text-xs font-semibold text-[#11152B] bg-transparent border-b border-transparent hover:border-[#E3E6EF] focus:border-[#635BFF] focus:outline-none transition-colors w-full sm:w-64"
+                              />
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              {/* Shot Duration */}
+                              <div className="flex items-center gap-1 bg-white border border-[#E3E6EF] px-2 py-0.5 rounded-md text-xs font-mono">
+                                <Clock className="w-3 h-3 text-[#62677A]" />
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={60}
+                                  value={shot.durationSeconds}
+                                  onChange={(e) =>
+                                    handleUpdateShot(shot.id, {
+                                      durationSeconds: Math.max(1, parseInt(e.target.value, 10) || 1),
+                                    })
+                                  }
+                                  className="w-8 bg-transparent text-center font-bold text-[#11152B] focus:outline-none"
+                                />
+                                <span className="text-[#62677A]">s</span>
+                              </div>
+
+                              {/* Reorder within scene */}
+                              <button
+                                type="button"
+                                disabled={shotIndex === 0}
+                                onClick={() => handleMoveShot(scene.id, shotIndex, 'up')}
+                                className="p-1 text-[#62677A] hover:text-[#11152B] disabled:opacity-25 transition-colors cursor-pointer"
+                                title="Move Shot Up"
+                              >
+                                <ChevronUp className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={shotIndex === sceneShots.length - 1}
+                                onClick={() => handleMoveShot(scene.id, shotIndex, 'down')}
+                                className="p-1 text-[#62677A] hover:text-[#11152B] disabled:opacity-25 transition-colors cursor-pointer"
+                                title="Move Shot Down"
+                              >
+                                <ChevronDown className="w-3.5 h-3.5" />
+                              </button>
+
+                              {/* Delete Shot */}
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteShot(shot.id)}
+                                className="p-1 text-[#62677A] hover:text-[#DC2626] transition-colors cursor-pointer"
+                                title="Delete Shot"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Visual Intent */}
+                          <div>
+                            <input
+                              type="text"
+                              value={shot.visualIntent}
+                              onChange={(e) => handleUpdateShot(shot.id, { visualIntent: e.target.value })}
+                              placeholder={
+                                lang === 'ar'
+                                  ? 'الهدف البصري للقطة (حركة الكاميرا أو حركة الشخصية داخل الكادر)...'
+                                  : 'Visual intent (specific camera action, framing target, movement in take)...'
+                              }
+                              className="w-full text-xs p-2 bg-white border border-[#E3E6EF] rounded-md focus:border-[#635BFF] focus:outline-none"
+                            />
+                          </div>
+
+                          {/* Cinematic Parameters Row */}
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                            {/* Framing */}
+                            <div>
+                              <span className="block text-[10px] font-semibold text-[#62677A] mb-0.5">
+                                {lang === 'ar' ? 'التأطير' : 'Framing'}
+                              </span>
+                              <select
+                                value={shot.framing}
+                                onChange={(e) =>
+                                  handleUpdateShot(shot.id, { framing: e.target.value as ShotFraming })
+                                }
+                                className="w-full px-2 py-1 bg-white border border-[#E3E6EF] rounded text-xs text-[#11152B] font-medium"
+                              >
+                                <option value="extreme_wide">Extreme Wide</option>
+                                <option value="wide">Wide</option>
+                                <option value="medium_wide">Medium Wide</option>
+                                <option value="medium">Medium</option>
+                                <option value="close_up">Close-up</option>
+                                <option value="extreme_close_up">Extreme Close-up</option>
+                                <option value="over_the_shoulder">Over-the-shoulder</option>
+                                <option value="pov">POV</option>
+                                <option value="macro">Macro</option>
+                              </select>
+                            </div>
+
+                            {/* Camera Angle */}
+                            <div>
+                              <span className="block text-[10px] font-semibold text-[#62677A] mb-0.5">
+                                {lang === 'ar' ? 'زاوية الكاميرا' : 'Camera Angle'}
+                              </span>
+                              <select
+                                value={shot.cameraAngle}
+                                onChange={(e) =>
+                                  handleUpdateShot(shot.id, { cameraAngle: e.target.value as CameraAngle })
+                                }
+                                className="w-full px-2 py-1 bg-white border border-[#E3E6EF] rounded text-xs text-[#11152B] font-medium"
+                              >
+                                <option value="eye_level">Eye Level</option>
+                                <option value="low_angle">Low Angle</option>
+                                <option value="high_angle">High Angle</option>
+                                <option value="dutch_angle">Dutch Angle (Tilted)</option>
+                                <option value="birds_eye">Bird's Eye (Top-Down)</option>
+                                <option value="worms_eye">Worm's Eye</option>
+                              </select>
+                            </div>
+
+                            {/* Camera Movement */}
+                            <div>
+                              <span className="block text-[10px] font-semibold text-[#62677A] mb-0.5">
+                                {lang === 'ar' ? 'حركة الكاميرا' : 'Camera Movement'}
+                              </span>
+                              <select
+                                value={shot.cameraMovement}
+                                onChange={(e) =>
+                                  handleUpdateShot(shot.id, { cameraMovement: e.target.value as CameraMovement })
+                                }
+                                className="w-full px-2 py-1 bg-white border border-[#E3E6EF] rounded text-xs text-[#11152B] font-medium"
+                              >
+                                <option value="static">Static (Locked off)</option>
+                                <option value="pan_left">Pan Left</option>
+                                <option value="pan_right">Pan Right</option>
+                                <option value="tilt_up">Tilt Up</option>
+                                <option value="tilt_down">Tilt Down</option>
+                                <option value="dolly_in">Dolly In (Push)</option>
+                                <option value="dolly_out">Dolly Out (Pull)</option>
+                                <option value="zoom_in">Zoom In</option>
+                                <option value="zoom_out">Zoom Out</option>
+                                <option value="tracking">Tracking Follow</option>
+                                <option value="crane">Crane / Jib</option>
+                                <option value="handheld">Handheld Organic</option>
+                                <option value="orbital">Orbital Fly-Around</option>
+                              </select>
+                            </div>
+                          </div>
+
+                          {/* Dialogue / VO snippet (Optional) */}
+                          <div className="flex items-center gap-2 pt-1 border-t border-[#E3E6EF]/60">
+                            <Volume2 className="w-3 h-3 text-[#62677A] shrink-0" />
+                            <input
+                              type="text"
+                              value={shot.dialogueSnippet || ''}
+                              onChange={(e) => handleUpdateShot(shot.id, { dialogueSnippet: e.target.value })}
+                              placeholder={
+                                lang === 'ar'
+                                  ? 'حوار أو تعليق صوتي لهذه اللقطة (اختياري)...'
+                                  : 'Dialogue or VO snippet spoken during this take (optional)...'
+                              }
+                              className="w-full text-[11px] px-2 py-1 bg-white border border-[#E3E6EF] rounded text-[#11152B] focus:outline-none focus:border-[#635BFF]"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             );
