@@ -45,9 +45,27 @@ export const EditorStage: React.FC<EditorStageProps> = ({ project, onProceedToEx
   const animationFrameRef = useRef<number | null>(null);
   const lastTimestampRef = useRef<number | null>(null);
 
-  // Build timeline clips from scenes if timeline is empty
+  // Build timeline clips from shots or scenes if timeline is empty
   const clips: TimelineClip[] = (project.timeline?.clips?.length > 0)
     ? project.timeline.clips
+    : (project.shots && project.shots.length > 0)
+    ? project.shots.map((shot, idx) => {
+        const prevDuration = project.shots!
+          .slice(0, idx)
+          .reduce((sum, prev) => sum + (Number(prev.durationSeconds) || 5), 0);
+        return {
+          id: 'clip_shot_' + shot.id,
+          sceneId: shot.sceneId,
+          shotId: shot.id,
+          track: 'video',
+          startTimeSeconds: prevDuration,
+          durationSeconds: Number(shot.durationSeconds) || 5,
+          sourceInSeconds: 0,
+          volume: 1,
+          title: shot.name,
+          transitionIn: idx === 0 ? 'cut' : 'crossfade',
+        };
+      })
     : scenes.map((s, idx) => {
         const prevDuration = scenes
           .slice(0, idx)

@@ -66,6 +66,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ project, onBackToDashboard
           <GenerationStage
             project={project}
             onProceedToAssets={() => handleSelectStage('assets')}
+            onNavigateToPrompts={() => handleSelectStage('prompts')}
           />
         )}
 

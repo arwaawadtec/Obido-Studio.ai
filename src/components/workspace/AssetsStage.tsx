@@ -65,10 +65,13 @@ export const AssetsStage: React.FC<AssetsStageProps> = ({ project, onProceedToEd
     reader.readAsDataURL(file);
   };
 
+  const [timelineFeedback, setTimelineFeedback] = useState<string | null>(null);
+
   const handleAttachToTimeline = (asset: Asset) => {
     const newClip = {
       id: 'clip_' + Math.random().toString(36).substring(2, 8),
       sceneId: asset.sceneId || project.scenes[0]?.id || 'sc_1',
+      shotId: asset.shotId,
       assetId: asset.id,
       track: asset.type === 'audio_voiceover' ? ('voiceover' as const) : ('video' as const),
       startTimeSeconds: 0,
@@ -86,7 +89,8 @@ export const AssetsStage: React.FC<AssetsStageProps> = ({ project, onProceedToEd
       },
     });
 
-    alert(lang === 'ar' ? 'تمت إضافة العنصر إلى مسار التايم لاين بنجاح' : 'Asset added to editor timeline');
+    setTimelineFeedback(lang === 'ar' ? 'تمت إضافة العنصر إلى مسار التايم لاين بنجاح' : 'Asset added to editor timeline');
+    setTimeout(() => setTimelineFeedback(null), 3000);
   };
 
   const handleProceed = () => {
@@ -135,6 +139,13 @@ export const AssetsStage: React.FC<AssetsStageProps> = ({ project, onProceedToEd
           </button>
         </div>
       </div>
+
+      {timelineFeedback && (
+        <div className="flex items-center gap-2 px-3.5 py-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-xs font-medium animate-fadeIn">
+          <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span>{timelineFeedback}</span>
+        </div>
+      )}
 
       {/* Filter Tabs */}
       <div className="flex items-center gap-2 border-b border-[#E3E6EF] pb-3">

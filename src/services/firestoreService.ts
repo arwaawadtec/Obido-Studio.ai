@@ -99,9 +99,10 @@ export class FirestoreService {
     const path = `users/${userId}`;
     const docRef = doc(db, 'users', userId);
 
-    // If client is online in browser, permit a brief retry for initial connection handshake
+    // If client is online in browser, permit a brief bounded retry for initial connection handshake
     const isOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
-    const maxAttempts = isOnline ? 2 : 1;
+    const maxAttempts = isOnline ? 3 : 1;
+    const retryDelays = [400, 1000];
     let lastOfflineError: unknown = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -119,9 +120,10 @@ export class FirestoreService {
       } catch (error) {
         if (isOfflineError(error)) {
           lastOfflineError = error;
-          // If online and first attempt had a transient connection delay, retry once after short backoff
+          // If online and attempts remain, retry with bounded exponential backoff
           if (attempt < maxAttempts) {
-            await new Promise((resolve) => setTimeout(resolve, 300));
+            const delay = retryDelays[attempt - 1] || 1000;
+            await new Promise((resolve) => setTimeout(resolve, delay));
             continue;
           }
           break;

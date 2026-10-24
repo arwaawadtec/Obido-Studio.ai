@@ -6,6 +6,8 @@ import {
   getShotsForScene,
   mapLegacyFraming,
   mapLegacyCameraMovement,
+  getPromptsForShot,
+  getActivePromptForShot,
 } from './shotMigration';
 
 const STORAGE_KEY = 'obido_studio_projects_v1';
@@ -1116,6 +1118,133 @@ class StorageService {
     return getShotsForScene(project, sceneId);
   }
 
+  // Shot Prompt Management
+  getShotPrompts(projectId: string, shotId: string, sceneId?: string): PromptVersion[] {
+    const project = this.getProject(projectId);
+    if (!project) return [];
+    return getPromptsForShot(project, shotId, sceneId);
+  }
+
+  getActiveShotPrompt(projectId: string, shotId: string, sceneId?: string): PromptVersion | undefined {
+    const project = this.getProject(projectId);
+    if (!project) return undefined;
+    return getActivePromptForShot(project, shotId, sceneId);
+  }
+
+  saveShotPrompt(
+    projectId: string,
+    shotId: string,
+    promptData: Partial<PromptVersion>
+  ): PromptVersion | undefined {
+    const project = this.getProject(projectId);
+    if (!project) return undefined;
+
+    const shot = (project.shots || []).find((s) => s.id === shotId);
+    if (!shot) return undefined;
+
+    // For shot 1, if it has no versions yet, it can adopt legacy scene prompt versions
+    // For subsequent shots (take 2, 3...), they start with their own clean prompt history
+    let existingVersions: PromptVersion[] = [];
+    if (project.prompts && project.prompts[shotId] && project.prompts[shotId].length > 0) {
+      existingVersions = project.prompts[shotId];
+    } else if (shot.shotNumber === 1 && project.prompts && project.prompts[shot.sceneId]) {
+      existingVersions = project.prompts[shot.sceneId];
+    }
+
+    const newVersionNumber = existingVersions.length + 1;
+    const versionId = `pv_${shotId}_v${newVersionNumber}_${Date.now().toString(36)}`;
+
+    const newVersion: PromptVersion = {
+      id: versionId,
+      sceneId: shot.sceneId,
+      shotId: shot.id,
+      versionNumber: newVersionNumber,
+      createdAt: new Date().toISOString(),
+      visualPrompt: promptData.visualPrompt || shot.visualIntent || '',
+      motionInstructions: promptData.motionInstructions || 'Smooth cinematic camera movement',
+      cameraDirection: promptData.cameraDirection || shot.framing || 'medium',
+      negativePrompt:
+        promptData.negativePrompt ||
+        'blurry, flickering, low-res, text artifacts, watermarks, floating limbs, cartoon',
+      audioInstructions: promptData.audioInstructions || shot.dialogueSnippet || '',
+      targetProvider: promptData.targetProvider || 'gemini_omni',
+      targetModel:
+        promptData.targetModel ||
+        (promptData.targetProvider === 'gemini_omni' ? 'gemini-omni-1.1-flash' : 'external-v1'),
+    };
+
+    const updatedPrompts = {
+      ...(project.prompts || {}),
+      [shot.id]: [newVersion, ...existingVersions.filter((v) => v.id !== versionId)],
+      // Backward compatibility: only sync primary shot (shot 1) to scene prompt list
+      ...(shot.shotNumber === 1
+        ? {
+            [shot.sceneId]: [
+              newVersion,
+              ...(project.prompts?.[shot.sceneId] || []).filter((v) => v.id !== versionId),
+            ],
+          }
+        : {}),
+    };
+
+    const updatedActivePromptVersion = {
+      ...(project.activePromptVersion || {}),
+      [shot.id]: versionId,
+      ...(shot.shotNumber === 1 ? { [shot.sceneId]: versionId } : {}),
+    };
+
+    // Update shot status and pointer
+    const updatedShots = (project.shots || []).map((s) =>
+      s.id === shotId
+        ? {
+            ...s,
+            activePromptId: versionId,
+            status: s.status === 'draft' ? ('prompted' as const) : s.status,
+            updatedAt: new Date().toISOString(),
+          }
+        : s
+    );
+
+    this.updateProject(projectId, {
+      prompts: updatedPrompts,
+      activePromptVersion: updatedActivePromptVersion,
+      shots: updatedShots,
+    });
+
+    return newVersion;
+  }
+
+  setActiveShotPromptVersion(projectId: string, shotId: string, versionId: string): boolean {
+    const project = this.getProject(projectId);
+    if (!project) return false;
+
+    const shot = (project.shots || []).find((s) => s.id === shotId);
+    if (!shot) return false;
+
+    const updatedActivePromptVersion = {
+      ...(project.activePromptVersion || {}),
+      [shotId]: versionId,
+      [shot.sceneId]: versionId,
+    };
+
+    const updatedShots = (project.shots || []).map((s) =>
+      s.id === shotId
+        ? {
+            ...s,
+            activePromptId: versionId,
+            updatedAt: new Date().toISOString(),
+          }
+        : s
+    );
+
+    this.updateProject(projectId, {
+      activePromptVersion: updatedActivePromptVersion,
+      shots: updatedShots,
+    });
+
+    return true;
+  }
+
   // Assets & Jobs
   addAsset(projectId: string, asset: Omit<Asset, 'id' | 'createdAt'>): Asset {
     const project = this.getProject(projectId);
@@ -1133,8 +1262,27 @@ class StorageService {
     return newAsset;
   }
 
-  addGenerationJob(projectId: string, job: Omit<GenerationJob, 'id' | 'queuedAt'>): GenerationJob {
+  addGenerationJob(
+    projectId: string,
+    job: Omit<GenerationJob, 'id' | 'queuedAt'>,
+    deduplicate: boolean = true
+  ): GenerationJob {
     const project = this.getProject(projectId);
+
+    // Deduplication: prevent duplicate concurrent queued/processing jobs for the same shot
+    if (deduplicate && project) {
+      const existing = (project.generationJobs || []).find(
+        (j) =>
+          (j.status === 'queued' || j.status === 'processing') &&
+          j.taskType === job.taskType &&
+          ((job.shotId && j.shotId === job.shotId) ||
+            (!job.shotId && job.sceneId && j.sceneId === job.sceneId))
+      );
+      if (existing) {
+        return existing;
+      }
+    }
+
     const newJob: GenerationJob = {
       ...job,
       id: 'job_' + Math.random().toString(36).substring(2, 9),

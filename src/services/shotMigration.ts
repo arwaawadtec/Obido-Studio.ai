@@ -240,12 +240,108 @@ export function migrateProjectToShots(project: Project): Project {
       }
     : project.timeline;
 
+  // Safe GenerationJob shotId compatibility annotation
+  const updatedGenerationJobs = (project.generationJobs || []).map((job) => {
+    if (!job.sceneId || job.shotId) return job;
+    const sceneShots = existingShotsByScene.get(job.sceneId) || [];
+    if (sceneShots.length === 1) {
+      return {
+        ...job,
+        shotId: sceneShots[0].id,
+      };
+    }
+    return job;
+  });
+
+  // Safe PromptVersion shotId migration:
+  // Propagates scene-level prompt versions to the primary/first shot of each scene if not already set
+  const updatedPrompts: Record<string, import('../types').PromptVersion[]> = { ...(project.prompts || {}) };
+  const updatedActivePromptVersion: Record<string, string> = { ...(project.activePromptVersion || {}) };
+
+  for (const scene of updatedScenes) {
+    const sceneShots = existingShotsByScene.get(scene.id) || [];
+    if (sceneShots.length > 0) {
+      const primaryShot = sceneShots[0];
+      const scenePrompts = project.prompts?.[scene.id] || [];
+
+      // If the primary shot doesn't have prompt history yet but the scene has prompts, migrate them
+      if ((!updatedPrompts[primaryShot.id] || updatedPrompts[primaryShot.id].length === 0) && scenePrompts.length > 0) {
+        updatedPrompts[primaryShot.id] = scenePrompts.map((pv) => ({
+          ...pv,
+          shotId: primaryShot.id,
+          sceneId: scene.id,
+        }));
+      }
+
+      // Propagate active prompt version pointer
+      if (project.activePromptVersion?.[scene.id] && !updatedActivePromptVersion[primaryShot.id]) {
+        updatedActivePromptVersion[primaryShot.id] = project.activePromptVersion[scene.id];
+        if (!primaryShot.activePromptId) {
+          primaryShot.activePromptId = project.activePromptVersion[scene.id];
+        }
+      }
+    }
+  }
+
   return {
     ...project,
     schemaVersion: 2,
     scenes: updatedScenes,
     shots: updatedShots,
+    prompts: updatedPrompts,
+    activePromptVersion: updatedActivePromptVersion,
+    generationJobs: updatedGenerationJobs,
     assets: updatedAssets,
     timeline: updatedTimeline,
   };
 }
+
+/**
+ * Retrieves prompt history for a shot, gracefully falling back to scene prompts if unmigrated.
+ */
+export function getPromptsForShot(
+  project: Partial<Project>,
+  shotId: string,
+  sceneId?: string
+): import('../types').PromptVersion[] {
+  if (!project.prompts) return [];
+
+  // 1. Direct shot-level prompt versions
+  if (shotId && project.prompts[shotId] && project.prompts[shotId].length > 0) {
+    return project.prompts[shotId];
+  }
+
+  // 2. Fallback to scene-level prompts for backward compatibility
+  if (sceneId && project.prompts[sceneId] && project.prompts[sceneId].length > 0) {
+    return project.prompts[sceneId].map((pv) => ({
+      ...pv,
+      shotId: pv.shotId || shotId,
+    }));
+  }
+
+  return [];
+}
+
+/**
+ * Retrieves the active prompt version for a shot.
+ */
+export function getActivePromptForShot(
+  project: Partial<Project>,
+  shotId: string,
+  sceneId?: string
+): import('../types').PromptVersion | undefined {
+  const versions = getPromptsForShot(project, shotId, sceneId);
+  if (versions.length === 0) return undefined;
+
+  const activeId =
+    project.activePromptVersion?.[shotId] ||
+    (sceneId ? project.activePromptVersion?.[sceneId] : undefined);
+
+  if (activeId) {
+    const found = versions.find((v) => v.id === activeId);
+    if (found) return found;
+  }
+
+  return versions[0];
+}
+

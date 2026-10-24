@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Terminal,
   Sparkles,
@@ -13,10 +13,21 @@ import {
   Loader2,
   AlertCircle,
   History,
+  Video,
+  Clock,
+  CheckCircle2,
+  ChevronRight,
+  RotateCcw,
+  Sliders,
 } from 'lucide-react';
-import { Project, PromptVersion, Scene } from '../../types';
+import { Project, PromptVersion, Scene, Shot } from '../../types';
 import { storage } from '../../services/storage';
 import { authenticatedFetch } from '../../services/apiClient';
+import {
+  getShotsForScene,
+  getPromptsForShot,
+  getActivePromptForShot,
+} from '../../services/shotMigration';
 
 interface PromptsStageProps {
   project: Project;
@@ -27,61 +38,80 @@ export const PromptsStage: React.FC<PromptsStageProps> = ({ project, onProceedTo
   const lang = storage.getLanguagePreference();
 
   const scenes = project.scenes || [];
+  const shots = project.shots || [];
+
+  // Active scene and shot selection state
   const [selectedSceneId, setSelectedSceneId] = useState<string>(scenes[0]?.id || '');
   const activeScene = scenes.find((s) => s.id === selectedSceneId) || scenes[0];
 
-  // Active prompt version for current scene
-  const scenePrompts = (activeScene && project.prompts[activeScene.id]) || [];
-  const currentPrompt: PromptVersion = scenePrompts[0] || {
-    id: 'p_init_' + (activeScene?.id || 'none'),
-    sceneId: activeScene?.id || '',
-    versionNumber: 1,
-    createdAt: new Date().toISOString(),
-    visualPrompt: activeScene?.visualDescription || '',
-    motionInstructions: 'Smooth cinematic camera movement, realistic physics',
-    cameraDirection: activeScene?.cameraFraming || 'Medium shot',
-    negativePrompt: 'blurry, flickering, low-res, text artifacts, watermarks, floating limbs, cartoon',
-    audioInstructions: activeScene?.audioCues || 'Ambient background tone',
-    targetProvider: 'gemini_omni',
-    targetModel: 'gemini-omni-1.1-flash',
-  };
+  const sceneShots = activeScene ? getShotsForScene(project, activeScene.id) : [];
+  const [selectedShotId, setSelectedShotId] = useState<string>(sceneShots[0]?.id || shots[0]?.id || '');
+  const activeShot = (project.shots || []).find((s) => s.id === selectedShotId) || sceneShots[0];
 
-  const [visualPrompt, setVisualPrompt] = useState(currentPrompt.visualPrompt);
-  const [motionInstructions, setMotionInstructions] = useState(currentPrompt.motionInstructions);
-  const [cameraDirection, setCameraDirection] = useState(currentPrompt.cameraDirection);
-  const [negativePrompt, setNegativePrompt] = useState(currentPrompt.negativePrompt);
-  const [audioInstructions, setAudioInstructions] = useState(currentPrompt.audioInstructions);
-  const [targetProvider, setTargetProvider] = useState(currentPrompt.targetProvider);
+  // Prompt form fields for the currently active shot
+  const [visualPrompt, setVisualPrompt] = useState<string>('');
+  const [motionInstructions, setMotionInstructions] = useState<string>('');
+  const [cameraDirection, setCameraDirection] = useState<string>('');
+  const [negativePrompt, setNegativePrompt] = useState<string>('');
+  const [audioInstructions, setAudioInstructions] = useState<string>('');
+  const [targetProvider, setTargetProvider] = useState<string>('gemini_omni');
 
-  const [isEnhancing, setIsEnhancing] = useState(false);
+  // UI state
+  const [isEnhancing, setIsEnhancing] = useState<boolean>(false);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState<boolean>(false);
 
-  // Sync state when active scene changes
+  // Sync state whenever the selected shot changes
+  useEffect(() => {
+    if (!activeShot) return;
+
+    const activeP = getActivePromptForShot(project, activeShot.id, activeShot.sceneId);
+    if (activeP) {
+      setVisualPrompt(activeP.visualPrompt || '');
+      setMotionInstructions(activeP.motionInstructions || '');
+      setCameraDirection(activeP.cameraDirection || activeShot.framing || 'medium');
+      setNegativePrompt(
+        activeP.negativePrompt ||
+          'blurry, flickering, low-res, text artifacts, watermarks, floating limbs, cartoon'
+      );
+      setAudioInstructions(activeP.audioInstructions || activeShot.dialogueSnippet || '');
+      setTargetProvider(activeP.targetProvider || 'gemini_omni');
+    } else {
+      // Default initial prompt derived strictly from shot's visual intent
+      setVisualPrompt(activeShot.visualIntent || activeScene?.visualDescription || '');
+      setMotionInstructions(
+        activeShot.cameraMovement
+          ? `Camera ${activeShot.cameraMovement.replace('_', ' ')}, realistic physics and cinematic momentum`
+          : 'Smooth cinematic camera movement, realistic physics'
+      );
+      setCameraDirection(activeShot.framing || 'medium');
+      setNegativePrompt('blurry, flickering, low-res, text artifacts, watermarks, floating limbs, cartoon');
+      setAudioInstructions(activeShot.dialogueSnippet || activeScene?.audioCues || '');
+      setTargetProvider('gemini_omni');
+    }
+
+    setValidationError(null);
+  }, [activeShot?.id, project.id]);
+
+  // Handle switching scenes: automatically select first shot of that scene
   const handleSelectScene = (sceneId: string) => {
     setSelectedSceneId(sceneId);
-    const scenePrompts = project.prompts[sceneId] || [];
-    const targetScene = scenes.find((s) => s.id === sceneId);
-    const activeP = scenePrompts[0] || {
-      id: 'p_' + sceneId,
-      sceneId: sceneId,
-      versionNumber: 1,
-      createdAt: new Date().toISOString(),
-      visualPrompt: targetScene?.visualDescription || '',
-      motionInstructions: 'Smooth cinematic camera movement, realistic physics',
-      cameraDirection: targetScene?.cameraFraming || 'Medium shot',
-      negativePrompt: 'blurry, flickering, low-res, text artifacts, watermarks, floating limbs, cartoon',
-      audioInstructions: targetScene?.audioCues || 'Ambient background tone',
-      targetProvider: 'gemini_omni',
-      targetModel: 'gemini-omni-1.1-flash',
-    };
+    const sceneShots = getShotsForScene(project, sceneId);
+    if (sceneShots.length > 0) {
+      setSelectedShotId(sceneShots[0].id);
+    }
+  };
 
-    setVisualPrompt(activeP.visualPrompt);
-    setMotionInstructions(activeP.motionInstructions);
-    setCameraDirection(activeP.cameraDirection);
-    setNegativePrompt(activeP.negativePrompt);
-    setAudioInstructions(activeP.audioInstructions);
-    setTargetProvider(activeP.targetProvider);
+  // Handle selecting a specific shot
+  const handleSelectShot = (shotId: string) => {
+    setSelectedShotId(shotId);
+    const targetShot = (project.shots || []).find((s) => s.id === shotId);
+    if (targetShot && targetShot.sceneId !== selectedSceneId) {
+      setSelectedSceneId(targetShot.sceneId);
+    }
   };
 
   const handleCopy = (text: string, key: string) => {
@@ -90,19 +120,24 @@ export const PromptsStage: React.FC<PromptsStageProps> = ({ project, onProceedTo
     setTimeout(() => setCopiedKey(null), 1800);
   };
 
+  // AI Prompt Enhancement for the specific shot
   const handleEnhanceWithAI = async () => {
-    if (!activeScene) return;
+    if (!activeShot) return;
 
     setIsEnhancing(true);
     setFeedback(null);
+    setValidationError(null);
+
+    const framingHint = cameraDirection || activeShot.framing || 'medium';
+    const movementHint = activeShot.cameraMovement || 'static';
 
     try {
       const res = await authenticatedFetch('/api/ai/prompt-enhance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          visualDescription: activeScene.visualDescription || visualPrompt,
-          cameraFraming: cameraDirection || activeScene.cameraFraming,
+          visualDescription: visualPrompt || activeShot.visualIntent || activeScene?.visualDescription || '',
+          cameraFraming: `${framingHint}, ${movementHint}`,
           visualStyle: project.brief.visualStyle,
           targetProvider,
         }),
@@ -113,112 +148,164 @@ export const PromptsStage: React.FC<PromptsStageProps> = ({ project, onProceedTo
 
       if (data.prompt) {
         const p = data.prompt;
-        setVisualPrompt(p.visualPrompt || visualPrompt);
-        setMotionInstructions(p.motionInstructions || motionInstructions);
-        setCameraDirection(p.cameraDirection || cameraDirection);
-        setNegativePrompt(p.negativePrompt || negativePrompt);
-        setAudioInstructions(p.audioInstructions || audioInstructions);
+        const newVisual = p.visualPrompt || visualPrompt;
+        const newMotion = p.motionInstructions || motionInstructions;
+        const newCamera = p.cameraDirection || cameraDirection;
+        const newNegative = p.negativePrompt || negativePrompt;
+        const newAudio = p.audioInstructions || audioInstructions;
 
-        // Save as version
-        const existingVersions = project.prompts[activeScene.id] || [];
-        const newVersion: PromptVersion = {
-          id: 'p_v' + (existingVersions.length + 1) + '_' + Date.now().toString(36),
-          sceneId: activeScene.id,
-          versionNumber: existingVersions.length + 1,
-          createdAt: new Date().toISOString(),
-          visualPrompt: p.visualPrompt || visualPrompt,
-          motionInstructions: p.motionInstructions || motionInstructions,
-          cameraDirection: p.cameraDirection || cameraDirection,
-          negativePrompt: p.negativePrompt || negativePrompt,
-          audioInstructions: p.audioInstructions || audioInstructions,
+        setVisualPrompt(newVisual);
+        setMotionInstructions(newMotion);
+        setCameraDirection(newCamera);
+        setNegativePrompt(newNegative);
+        setAudioInstructions(newAudio);
+
+        // Save as new version for this specific shot
+        storage.saveShotPrompt(project.id, activeShot.id, {
+          visualPrompt: newVisual,
+          motionInstructions: newMotion,
+          cameraDirection: newCamera,
+          negativePrompt: newNegative,
+          audioInstructions: newAudio,
           targetProvider,
-          targetModel: targetProvider === 'gemini_omni' ? 'gemini-omni-1.1-flash' : 'external-v1',
-        };
+        });
 
-        const updatedPrompts = {
-          ...project.prompts,
-          [activeScene.id]: [newVersion, ...existingVersions],
-        };
-
-        storage.updateProject(project.id, { prompts: updatedPrompts });
-        setFeedback(lang === 'ar' ? 'تم تنقيح وتوسيع الموجهات بالذكاء الاصطناعي' : 'Prompts enhanced with cinematography syntax');
+        setFeedback(
+          lang === 'ar'
+            ? 'تم تحسين وتوسيع موجهات اللقطة بالذكاء الاصطناعي'
+            : `Prompt enhanced with cinematography syntax for ${activeShot.name}`
+        );
       }
     } catch (err: any) {
-      console.warn('AI prompt enhancement error', err);
-      // Client fallback enhancement
-      const enhancedVisual = `${visualPrompt || activeScene.visualDescription}, shot on 35mm anamorphic lens, volumetric rim lighting, ${project.brief.visualStyle.replace('_', ' ')} aesthetic, 8k resolution, crisp details`;
+      console.warn('AI prompt enhancement fallback:', err);
+      // Local deterministic cinematography prompt enhancement
+      const enhancedVisual = `${visualPrompt || activeShot.visualIntent}, captured on 35mm anamorphic prime lens, ${framingHint.replace('_', ' ')} framing, volumetric rim lighting, ${project.brief.visualStyle.replace('_', ' ')} aesthetic, 8k resolution, crisp photorealistic textures`;
       setVisualPrompt(enhancedVisual);
-      setFeedback(lang === 'ar' ? 'تم تطبيق المعايير السينمائية محلياً' : 'Applied local cinematography prompt template');
+
+      storage.saveShotPrompt(project.id, activeShot.id, {
+        visualPrompt: enhancedVisual,
+        motionInstructions,
+        cameraDirection,
+        negativePrompt,
+        audioInstructions,
+        targetProvider,
+      });
+
+      setFeedback(
+        lang === 'ar'
+          ? 'تم تطبيق المعايير السينمائية للقطة محلياً'
+          : `Applied cinematography enhancement template for ${activeShot.name}`
+      );
     } finally {
       setIsEnhancing(false);
+      setTimeout(() => setFeedback(null), 3500);
     }
   };
 
-  const handleSaveCurrentPrompt = () => {
-    if (!activeScene) return;
+  // Save current prompt form as a new version
+  const handleSaveCurrentPrompt = (): boolean => {
+    if (!activeShot) return false;
 
-    const existingVersions = project.prompts[activeScene.id] || [];
-    const newVersion: PromptVersion = {
-      id: 'p_v' + (existingVersions.length + 1) + '_' + Date.now().toString(36),
-      sceneId: activeScene.id,
-      versionNumber: existingVersions.length + 1,
-      createdAt: new Date().toISOString(),
-      visualPrompt,
-      motionInstructions,
-      cameraDirection,
-      negativePrompt,
-      audioInstructions,
+    if (!visualPrompt.trim()) {
+      setValidationError(
+        lang === 'ar'
+          ? 'يرجى إدخال وصف الموجه البصري للقطة'
+          : 'Visual prompt description cannot be empty.'
+      );
+      return false;
+    }
+
+    setIsSaving(true);
+    setValidationError(null);
+
+    storage.saveShotPrompt(project.id, activeShot.id, {
+      visualPrompt: visualPrompt.trim(),
+      motionInstructions: motionInstructions.trim(),
+      cameraDirection: cameraDirection.trim(),
+      negativePrompt: negativePrompt.trim(),
+      audioInstructions: audioInstructions.trim(),
       targetProvider,
-      targetModel: targetProvider === 'gemini_omni' ? 'gemini-omni-1.1-flash' : 'external-v1',
-    };
+    });
 
-    const updatedPrompts = {
-      ...project.prompts,
-      [activeScene.id]: [newVersion, ...existingVersions],
-    };
+    setIsSaving(false);
+    setFeedback(
+      lang === 'ar'
+        ? `تم حفظ موجهات اللقطة #${activeShot.shotNumber}`
+        : `Saved prompt version for Shot ${activeShot.shotNumber}`
+    );
+    setTimeout(() => setFeedback(null), 2500);
+    return true;
+  };
 
-    storage.updateProject(project.id, { prompts: updatedPrompts });
-    setFeedback(lang === 'ar' ? 'تم حفظ الموجهات' : 'Prompts saved successfully');
+  // Restore a previous version for this shot
+  const handleRestoreVersion = (version: PromptVersion) => {
+    setVisualPrompt(version.visualPrompt || '');
+    setMotionInstructions(version.motionInstructions || '');
+    setCameraDirection(version.cameraDirection || '');
+    setNegativePrompt(version.negativePrompt || '');
+    setAudioInstructions(version.audioInstructions || '');
+    setTargetProvider(version.targetProvider || 'gemini_omni');
+
+    if (activeShot) {
+      storage.setActiveShotPromptVersion(project.id, activeShot.id, version.id);
+    }
+
+    setFeedback(
+      lang === 'ar'
+        ? `تمت استعادة الإصدار #${version.versionNumber}`
+        : `Restored Version ${version.versionNumber}`
+    );
     setTimeout(() => setFeedback(null), 2000);
   };
 
   const handleProceed = () => {
-    handleSaveCurrentPrompt();
+    if (visualPrompt.trim() && activeShot) {
+      handleSaveCurrentPrompt();
+    }
     storage.setWorkflowStage(project.id, 'generation');
     onProceedToGeneration();
   };
 
-  if (scenes.length === 0) {
+  if (scenes.length === 0 || shots.length === 0) {
     return (
       <div className="p-12 text-center bg-white border border-[#E3E6EF] rounded-xl space-y-3">
         <Terminal className="w-10 h-10 text-[#62677A]/40 mx-auto" />
         <h3 className="text-sm font-semibold text-[#11152B]">
-          {lang === 'ar' ? 'لا توجد مشاهد لصياغة الموجهات لها' : 'No scenes available for prompts'}
+          {lang === 'ar' ? 'لا توجد لقطات متاحة لصياغة الموجهات' : 'No shots available for prompt engineering'}
         </h3>
         <p className="text-xs text-[#62677A] max-w-sm mx-auto">
           {lang === 'ar'
-            ? 'يجب إعداد المشاهد أولاً في مرحلة لوحة القصة قبل هندسة الموجهات'
-            : 'Please construct scenes in Stage 3 (Storyboard) before composing technical prompts.'}
+            ? 'يجب إعداد المشاهد واللقطات أولاً في مرحلة لوحة القصة قبل هندسة الموجهات'
+            : 'Please construct scenes and shot takes in Stage 3 (Storyboard) before composing technical prompts.'}
         </p>
       </div>
     );
   }
 
+  const shotVersions = activeShot ? getPromptsForShot(project, activeShot.id, activeShot.sceneId) : [];
+  const activePromptVersionId =
+    project.activePromptVersion?.[activeShot?.id || ''] ||
+    project.activePromptVersion?.[activeShot?.sceneId || ''] ||
+    shotVersions[0]?.id;
+
   return (
-    <div className="max-w-5xl mx-auto space-y-8">
+    <div className="max-w-6xl mx-auto space-y-8">
       {/* Stage Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#E3E6EF]">
         <div>
           <div className="text-xs text-[#635BFF] font-semibold tracking-wide uppercase font-mono mb-1">
             {lang === 'ar' ? 'المرحلة 4 من 8' : 'Stage 4 of 8'}
           </div>
-          <h2 className="text-xl font-bold text-[#11152B] font-display">
-            {lang === 'ar' ? 'مساحة هندسة الموجهات' : 'Prompt Engineering Studio'}
+          <h2 className="text-xl font-bold text-[#11152B] font-display flex items-center gap-2">
+            <span>{lang === 'ar' ? 'مساحة هندسة موجهات اللقطات' : 'Shot Prompt Engineering Studio'}</span>
+            <span className="text-xs px-2 py-0.5 rounded-full font-mono font-medium bg-[#635BFF]/10 text-[#635BFF]">
+              Shot-Level
+            </span>
           </h2>
           <p className="text-xs text-[#62677A] mt-0.5">
             {lang === 'ar'
-              ? 'صياغة الموجهات البصرية، وحركات الكاميرا، والموجهات السلبية الخاصة بنماذج الفيديو'
-              : 'Compose visual prompts, motion vectors, camera lenses, and negative prompts per scene'}
+              ? 'صياغة الموجهات البصرية، وحركات الكاميرا، والموجهات السلبية لكل لقطة بشكل مستقل'
+              : 'Compose visual prompts, motion vectors, camera lenses, and negative prompts for individual shot takes'}
           </p>
         </div>
 
@@ -226,10 +313,11 @@ export const PromptsStage: React.FC<PromptsStageProps> = ({ project, onProceedTo
           <button
             type="button"
             onClick={handleSaveCurrentPrompt}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#11152B] bg-white border border-[#E3E6EF] hover:bg-[#F6F7FB] rounded-lg transition-colors"
+            disabled={isSaving}
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#11152B] bg-white border border-[#E3E6EF] hover:bg-[#F6F7FB] rounded-lg transition-colors shadow-xs"
           >
-            <Check className="w-3.5 h-3.5" />
-            <span>{lang === 'ar' ? 'حفظ الموجهات' : 'Save Prompts'}</span>
+            {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+            <span>{lang === 'ar' ? 'حفظ الموجهات' : 'Save Version'}</span>
           </button>
 
           <button
@@ -243,216 +331,449 @@ export const PromptsStage: React.FC<PromptsStageProps> = ({ project, onProceedTo
         </div>
       </div>
 
-      {/* Scene Tabs Bar */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
-        {scenes.map((scene) => {
-          const isSelected = scene.id === selectedSceneId;
-          const hasCustomPrompts = (project.prompts[scene.id] || []).length > 0;
-          return (
-            <button
-              key={scene.id}
-              onClick={() => handleSelectScene(scene.id)}
-              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium border transition-all whitespace-nowrap ${
-                isSelected
-                  ? 'border-[#635BFF] bg-[#635BFF]/10 text-[#635BFF]'
-                  : 'border-[#E3E6EF] bg-white hover:border-[#D1D5E5] text-[#62677A]'
-              }`}
-            >
-              <span className="font-mono font-bold">#{scene.sceneNumber}</span>
-              <span className="truncate max-w-[120px]">{scene.narrativePurpose}</span>
-              {hasCustomPrompts && (
-                <span className="w-1.5 h-1.5 rounded-full bg-[#16A34A]" />
-              )}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Active Scene Prompt Builder */}
-      {activeScene && (
-        <div className="space-y-6">
-          {/* Quick Scene Reference Card */}
-          <div className="p-4 bg-white border border-[#E3E6EF] rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2 text-xs text-[#62677A]">
-                <span className="font-bold text-[#11152B]">Scene #{activeScene.sceneNumber}</span>
-                <span aria-hidden="true">·</span>
-                <span>{activeScene.cameraFraming}</span>
-                <span aria-hidden="true">·</span>
-                <span className="font-mono tabular-nums">{activeScene.estimatedDurationSeconds}s</span>
-              </div>
-              <p className="text-xs text-[#62677A] line-clamp-1">
-                {activeScene.visualDescription || 'No visual description yet'}
-              </p>
-            </div>
-
-            <div className="flex items-center gap-3">
-              {/* Provider Selector */}
-              <select
-                value={targetProvider}
-                onChange={(e) => setTargetProvider(e.target.value)}
-                className="text-xs px-2.5 py-1.5 bg-[#F6F7FB] border border-[#E3E6EF] rounded-lg text-[#11152B] font-medium"
-              >
-                <option value="gemini_omni">Google Veo / Gemini Omni</option>
-                <option value="runway_gen3">Runway Gen-3 Alpha</option>
-                <option value="luma_dream">Luma Dream Machine</option>
-                <option value="local_demo">Local Prototype Adapter</option>
-              </select>
-
-              <button
-                type="button"
-                onClick={handleEnhanceWithAI}
-                disabled={isEnhancing}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#635BFF] hover:bg-[#5249ea] rounded-lg shadow-sm transition-all disabled:opacity-50 whitespace-nowrap"
-              >
-                {isEnhancing ? (
-                  <>
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    <span>{lang === 'ar' ? 'جارٍ التحسين...' : 'Synthesizing...'}</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-3 h-3 text-[#38D9F9]" />
-                    <span>{lang === 'ar' ? 'تحسين بالذكاء الاصطناعي' : 'AI Prompt Enhancer'}</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {feedback && (
-            <div className="p-3 bg-[#16A34A]/10 border border-[#16A34A]/20 rounded-lg text-xs text-[#16A34A] flex items-center gap-2">
-              <Check className="w-4 h-4 shrink-0" />
-              <span>{feedback}</span>
-            </div>
-          )}
-
-          {/* Form Fields: Visual, Motion, Camera, Negative */}
-          <div className="bg-white border border-[#E3E6EF] rounded-xl p-6 space-y-5 shadow-xs">
-            {/* Visual Prompt */}
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="text-xs font-semibold text-[#11152B] flex items-center gap-1.5">
-                  <Film className="w-3.5 h-3.5 text-[#635BFF]" />
-                  <span>{lang === 'ar' ? 'الموجّه البصري الرئيسي (Visual Prompt)' : 'Primary Visual Prompt'}</span>
-                </label>
-                <button
-                  type="button"
-                  onClick={() => handleCopy(visualPrompt, 'visual')}
-                  className="flex items-center gap-1 text-[11px] text-[#62677A] hover:text-[#11152B]"
-                >
-                  {copiedKey === 'visual' ? <Check className="w-3 h-3 text-[#16A34A]" /> : <Copy className="w-3 h-3" />}
-                  <span>{copiedKey === 'visual' ? (lang === 'ar' ? 'تم النسخ' : 'Copied') : (lang === 'ar' ? 'نسخ' : 'Copy')}</span>
-                </button>
-              </div>
-              <textarea
-                value={visualPrompt}
-                onChange={(e) => setVisualPrompt(e.target.value)}
-                rows={4}
-                placeholder="Subject details, environmental textures, volumetric lighting, photographic lens specification..."
-                className="w-full text-xs font-mono p-3 bg-[#F6F7FB]/50 border border-[#E3E6EF] rounded-lg focus:border-[#635BFF] focus:outline-none leading-relaxed text-[#11152B]"
-              />
-            </div>
-
-            {/* Motion & Camera Direction */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-xs font-semibold text-[#11152B] flex items-center gap-1.5">
-                    <Camera className="w-3.5 h-3.5 text-[#38D9F9]" />
-                    <span>{lang === 'ar' ? 'توجيهات الحركة (Motion Vectors)' : 'Motion Instructions'}</span>
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => handleCopy(motionInstructions, 'motion')}
-                    className="text-[11px] text-[#62677A] hover:text-[#11152B]"
-                  >
-                    {copiedKey === 'motion' ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-                <textarea
-                  value={motionInstructions}
-                  onChange={(e) => setMotionInstructions(e.target.value)}
-                  rows={3}
-                  placeholder="e.g. Slow smooth dolly-in, 45 degree gentle camera pan, fluid organic particle drift..."
-                  className="w-full text-xs font-mono p-2.5 bg-white border border-[#E3E6EF] rounded-lg focus:border-[#635BFF] focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-xs font-semibold text-[#11152B] flex items-center gap-1.5">
-                    <Layers className="w-3.5 h-3.5 text-[#9B8CFF]" />
-                    <span>{lang === 'ar' ? 'زوايا الكاميرا والعدسة' : 'Camera Direction & Framing'}</span>
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => handleCopy(cameraDirection, 'camera')}
-                    className="text-[11px] text-[#62677A] hover:text-[#11152B]"
-                  >
-                    {copiedKey === 'camera' ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-                <textarea
-                  value={cameraDirection}
-                  onChange={(e) => setCameraDirection(e.target.value)}
-                  rows={3}
-                  placeholder="e.g. 50mm f/1.8 lens, shallow depth of field with creamy bokeh, low angle shot looking upwards..."
-                  className="w-full text-xs font-mono p-2.5 bg-white border border-[#E3E6EF] rounded-lg focus:border-[#635BFF] focus:outline-none"
-                />
-              </div>
-            </div>
-
-            {/* Negative Prompt & Audio Instructions */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-xs font-semibold text-[#11152B]">
-                    {lang === 'ar' ? 'الموجّه السلبي (Negative Prompt)' : 'Negative Prompt (Avoid Artifacts)'}
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => handleCopy(negativePrompt, 'negative')}
-                    className="text-[11px] text-[#62677A] hover:text-[#11152B]"
-                  >
-                    {copiedKey === 'negative' ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-                <textarea
-                  value={negativePrompt}
-                  onChange={(e) => setNegativePrompt(e.target.value)}
-                  rows={2}
-                  placeholder="Artifacts to avoid: blurry, flickering, morphing, low-res, text watermarks, 3d game graphics..."
-                  className="w-full text-xs font-mono p-2.5 bg-white border border-[#E3E6EF] rounded-lg focus:border-[#635BFF] focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-xs font-semibold text-[#11152B] flex items-center gap-1.5">
-                    <Volume2 className="w-3.5 h-3.5 text-[#16A34A]" />
-                    <span>{lang === 'ar' ? 'توجيهات الصوت والموسيقى' : 'Audio & SFX Direction'}</span>
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => handleCopy(audioInstructions, 'audio')}
-                    className="text-[11px] text-[#62677A] hover:text-[#11152B]"
-                  >
-                    {copiedKey === 'audio' ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-                <textarea
-                  value={audioInstructions}
-                  onChange={(e) => setAudioInstructions(e.target.value)}
-                  rows={2}
-                  placeholder="Ambient room tone, sound effects, voice cadence, musical swell..."
-                  className="w-full text-xs font-mono p-2.5 bg-white border border-[#E3E6EF] rounded-lg focus:border-[#635BFF] focus:outline-none"
-                />
-              </div>
-            </div>
-          </div>
+      {/* Feedback & Error banners */}
+      {feedback && (
+        <div className="flex items-center gap-2 px-3.5 py-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-xs font-medium animate-fadeIn">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span>{feedback}</span>
         </div>
       )}
+
+      {validationError && (
+        <div className="flex items-center gap-2 px-3.5 py-2.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs font-medium animate-fadeIn">
+          <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+          <span>{validationError}</span>
+        </div>
+      )}
+
+      {/* Main Layout: Scene & Shot Navigator (Left) + Prompt Workspace (Right) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* Left Sidebar: Hierarchical Scene & Shot Picker */}
+        <div className="lg:col-span-4 bg-white border border-[#E3E6EF] rounded-xl p-4 space-y-4 shadow-xs">
+          <div className="flex items-center justify-between pb-2 border-b border-[#E3E6EF]">
+            <div className="text-xs font-bold text-[#11152B] flex items-center gap-1.5 uppercase tracking-wider font-mono">
+              <Film className="w-3.5 h-3.5 text-[#635BFF]" />
+              <span>{lang === 'ar' ? 'المشاهد واللقطات' : 'Scenes & Shot Takes'}</span>
+            </div>
+            <span className="text-[11px] font-mono text-[#62677A] bg-[#F6F7FB] px-2 py-0.5 rounded">
+              {shots.length} {lang === 'ar' ? 'لقطات' : 'shots'}
+            </span>
+          </div>
+
+          <div className="space-y-4 max-h-[640px] overflow-y-auto pr-1">
+            {scenes.map((scene) => {
+              const currentShots = getShotsForScene(project, scene.id);
+              const isCurrentScene = scene.id === selectedSceneId;
+
+              return (
+                <div
+                  key={scene.id}
+                  className={`rounded-lg border transition-all ${
+                    isCurrentScene
+                      ? 'border-[#635BFF]/40 bg-[#F6F7FB]/50'
+                      : 'border-[#E3E6EF] bg-white hover:border-[#CBD1E1]'
+                  }`}
+                >
+                  {/* Scene header row */}
+                  <button
+                    type="button"
+                    onClick={() => handleSelectScene(scene.id)}
+                    className="w-full text-left p-2.5 flex items-start justify-between gap-2 cursor-pointer"
+                  >
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-bold font-mono px-1.5 py-0.5 rounded bg-[#11152B] text-white">
+                          S{scene.sceneNumber}
+                        </span>
+                        <span className="text-xs font-semibold text-[#11152B] line-clamp-1">
+                          {scene.narrativePurpose || `Scene ${scene.sceneNumber}`}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-[#62677A] mt-0.5 flex items-center gap-2">
+                        <span>{scene.estimatedDurationSeconds || 5}s total</span>
+                        <span>•</span>
+                        <span>{currentShots.length} {currentShots.length === 1 ? 'take' : 'takes'}</span>
+                      </div>
+                    </div>
+                  </button>
+
+                  {/* Child Shots inside this scene */}
+                  <div className="px-2 pb-2 space-y-1.5 border-t border-[#E3E6EF]/60 pt-2">
+                    {currentShots.map((shot) => {
+                      const isSelectedShot = shot.id === selectedShotId;
+                      const shotPrompts = getPromptsForShot(project, shot.id, shot.sceneId);
+                      const hasPrompt = shotPrompts.length > 0;
+
+                      return (
+                        <button
+                          key={shot.id}
+                          type="button"
+                          onClick={() => handleSelectShot(shot.id)}
+                          className={`w-full text-left p-2 rounded-md flex items-center justify-between gap-2 text-xs transition-all cursor-pointer ${
+                            isSelectedShot
+                              ? 'bg-[#635BFF] text-white font-medium shadow-xs'
+                              : 'bg-white hover:bg-[#F6F7FB] text-[#11152B] border border-[#E3E6EF]'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 truncate">
+                            <span
+                              className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+                                isSelectedShot
+                                  ? 'bg-white/20 text-white'
+                                  : 'bg-[#F0F2F7] text-[#11152B]'
+                              }`}
+                            >
+                              Take {shot.shotNumber}
+                            </span>
+                            <span className="truncate">{shot.name}</span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span
+                              className={`text-[10px] font-mono ${
+                                isSelectedShot ? 'text-white/80' : 'text-[#62677A]'
+                              }`}
+                            >
+                              {shot.durationSeconds}s
+                            </span>
+                            {hasPrompt ? (
+                              <span
+                                className={`w-2 h-2 rounded-full ${
+                                  isSelectedShot ? 'bg-emerald-300' : 'bg-emerald-500'
+                                }`}
+                                title="Prompted"
+                              />
+                            ) : (
+                              <span
+                                className={`w-2 h-2 rounded-full ${
+                                  isSelectedShot ? 'bg-amber-300' : 'bg-amber-400'
+                                }`}
+                                title="Draft"
+                              />
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Right Main Column: Active Shot Details & Prompt Editor */}
+        <div className="lg:col-span-8 space-y-6">
+          {activeShot ? (
+            <>
+              {/* Active Shot Context Summary Banner */}
+              <div className="bg-white border border-[#E3E6EF] rounded-xl p-5 shadow-xs space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-[#E3E6EF]">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded font-mono text-xs font-bold bg-[#635BFF] text-white">
+                      Shot {activeShot.shotNumber}
+                    </span>
+                    <h3 className="text-base font-bold text-[#11152B]">{activeShot.name}</h3>
+                    <span className="text-xs text-[#62677A] font-mono">
+                      ({activeShot.durationSeconds} seconds)
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-medium font-mono px-2 py-0.5 rounded bg-[#F6F7FB] text-[#62677A] border border-[#E3E6EF]">
+                      {activeShot.framing}
+                    </span>
+                    <span className="text-[11px] font-medium font-mono px-2 py-0.5 rounded bg-[#F6F7FB] text-[#62677A] border border-[#E3E6EF]">
+                      {activeShot.cameraMovement.replace('_', ' ')}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowHistory(!showHistory)}
+                      className={`flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded border transition-colors ${
+                        showHistory
+                          ? 'bg-[#635BFF]/10 text-[#635BFF] border-[#635BFF]'
+                          : 'bg-white text-[#62677A] border-[#E3E6EF] hover:bg-[#F6F7FB]'
+                      }`}
+                    >
+                      <History className="w-3 h-3" />
+                      <span>{shotVersions.length} {shotVersions.length === 1 ? 'version' : 'versions'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Shot narrative visual intent reference */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div className="p-3 bg-[#F6F7FB] rounded-lg space-y-1">
+                    <div className="font-semibold text-[#62677A] uppercase tracking-wider text-[10px] font-mono">
+                      {lang === 'ar' ? 'الهدف البصري (من القصة)' : 'Storyboard Visual Intent'}
+                    </div>
+                    <p className="text-[#11152B] leading-relaxed">
+                      {activeShot.visualIntent || activeScene?.visualDescription || 'No storyboard visual description set.'}
+                    </p>
+                  </div>
+
+                  <div className="p-3 bg-[#F6F7FB] rounded-lg space-y-1">
+                    <div className="font-semibold text-[#62677A] uppercase tracking-wider text-[10px] font-mono">
+                      {lang === 'ar' ? 'الحوار / التعليق الصوتي' : 'Dialogue / Voiceover'}
+                    </div>
+                    <p className="text-[#11152B] leading-relaxed italic">
+                      {activeShot.dialogueSnippet || activeShot.voiceoverSnippet || activeScene?.narrationDialogue || 'No voiceover line.'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Version History Drawer (if opened) */}
+              {showHistory && (
+                <div className="bg-[#FBFBFE] border border-[#635BFF]/30 rounded-xl p-4 space-y-3 animate-fadeIn">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-[#11152B] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                      <History className="w-3.5 h-3.5 text-[#635BFF]" />
+                      <span>{lang === 'ar' ? 'تاريخ إصدارات الموجه للقطة' : `Version History — Shot ${activeShot.shotNumber}`}</span>
+                    </h4>
+                    <span className="text-[11px] text-[#62677A]">
+                      {shotVersions.length} recorded revisions
+                    </span>
+                  </div>
+
+                  {shotVersions.length === 0 ? (
+                    <p className="text-xs text-[#62677A] py-2">No previous versions saved for this shot yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {shotVersions.map((v) => {
+                        const isActive = v.id === activePromptVersionId;
+                        return (
+                          <div
+                            key={v.id}
+                            className={`p-3 rounded-lg border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
+                              isActive
+                                ? 'bg-white border-[#635BFF] shadow-xs ring-1 ring-[#635BFF]/20'
+                                : 'bg-white border-[#E3E6EF] hover:border-[#CBD1E1]'
+                            }`}
+                          >
+                            <div className="space-y-1 max-w-xl">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono font-bold text-[#635BFF]">
+                                  v{v.versionNumber}
+                                </span>
+                                <span className="text-[11px] text-[#62677A]">
+                                  {new Date(v.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#F0F2F7] text-[#11152B]">
+                                  {v.targetModel}
+                                </span>
+                                {isActive && (
+                                  <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800">
+                                    Active
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[#11152B] line-clamp-2 leading-relaxed">
+                                {v.visualPrompt}
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleCopy(v.visualPrompt, v.id)}
+                                className="px-2.5 py-1 text-[11px] font-medium border border-[#E3E6EF] hover:bg-[#F6F7FB] rounded transition-colors flex items-center gap-1"
+                              >
+                                {copiedKey === v.id ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                                <span>{copiedKey === v.id ? 'Copied' : 'Copy'}</span>
+                              </button>
+                              {!isActive && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRestoreVersion(v)}
+                                  className="px-2.5 py-1 text-[11px] font-medium bg-[#635BFF] text-white hover:bg-[#5249ea] rounded transition-colors flex items-center gap-1"
+                                >
+                                  <RotateCcw className="w-3 h-3" />
+                                  <span>Restore</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Technical Prompt Form */}
+              <div className="bg-white border border-[#E3E6EF] rounded-xl p-6 space-y-6 shadow-xs">
+                {/* Form Toolbar */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#E3E6EF]">
+                  <div className="flex items-center gap-2">
+                    <Terminal className="w-4 h-4 text-[#635BFF]" />
+                    <h4 className="text-sm font-bold text-[#11152B]">
+                      {lang === 'ar' ? 'محرر الموجه التقني' : 'Technical Cinematography Prompt'}
+                    </h4>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleEnhanceWithAI}
+                      disabled={isEnhancing}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#635BFF] bg-[#635BFF]/10 hover:bg-[#635BFF]/20 rounded-lg transition-colors cursor-pointer"
+                    >
+                      {isEnhancing ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Wand2 className="w-3.5 h-3.5" />
+                      )}
+                      <span>{lang === 'ar' ? 'تحسين بالذكاء الاصطناعي' : 'Enhance with AI'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(visualPrompt, 'main_prompt')}
+                      className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-[#62677A] hover:text-[#11152B] border border-[#E3E6EF] rounded-lg hover:bg-[#F6F7FB] transition-colors"
+                    >
+                      {copiedKey === 'main_prompt' ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-600" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                      <span>{copiedKey === 'main_prompt' ? 'Copied' : 'Copy'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 1. Primary Visual Prompt */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <label className="font-semibold text-[#11152B] flex items-center gap-1.5">
+                      <span>{lang === 'ar' ? 'الموجه البصري الأساسي' : 'Primary Visual Prompt'}</span>
+                      <span className="text-rose-500">*</span>
+                    </label>
+                    <span className="text-[11px] font-mono text-[#62677A]">
+                      {visualPrompt.length} chars
+                    </span>
+                  </div>
+                  <textarea
+                    rows={4}
+                    value={visualPrompt}
+                    onChange={(e) => setVisualPrompt(e.target.value)}
+                    placeholder="Describe lighting, subject placement, atmosphere, and cinematic texture..."
+                    className="w-full text-xs font-mono p-3 rounded-lg border border-[#E3E6EF] focus:border-[#635BFF] focus:ring-1 focus:ring-[#635BFF] outline-hidden leading-relaxed resize-y bg-[#FCFCFD]"
+                  />
+                  <p className="text-[11px] text-[#62677A]">
+                    {lang === 'ar'
+                      ? 'حدد عناصر الإضاءة، والعدسة، والمواد، والتركيب السينمائي للقطة'
+                      : 'Specify camera lens, focal depth, key lighting, volumetric atmosphere, and precise physical elements.'}
+                  </p>
+                </div>
+
+                {/* 2. Motion Instructions & Camera Direction Split */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-[#11152B] flex items-center gap-1.5">
+                      <Camera className="w-3.5 h-3.5 text-[#635BFF]" />
+                      <span>{lang === 'ar' ? 'حركة الكاميرا وتوجيه الإطار' : 'Camera Direction & Framing'}</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={cameraDirection}
+                      onChange={(e) => setCameraDirection(e.target.value)}
+                      placeholder="e.g. 50mm anamorphic, low angle tilt up, eye-level"
+                      className="w-full text-xs p-2.5 rounded-lg border border-[#E3E6EF] focus:border-[#635BFF] outline-hidden bg-[#FCFCFD]"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-[#11152B] flex items-center gap-1.5">
+                      <Film className="w-3.5 h-3.5 text-[#635BFF]" />
+                      <span>{lang === 'ar' ? 'ديناميكية الحركة والفيزياء' : 'Motion Vector & Physics'}</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={motionInstructions}
+                      onChange={(e) => setMotionInstructions(e.target.value)}
+                      placeholder="e.g. Slow gentle drift, realistic fluid turbulence, zero jitter"
+                      className="w-full text-xs p-2.5 rounded-lg border border-[#E3E6EF] focus:border-[#635BFF] outline-hidden bg-[#FCFCFD]"
+                    />
+                  </div>
+                </div>
+
+                {/* 3. Negative Prompt & Target Model Selector */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-[#11152B] flex items-center gap-1.5">
+                      <AlertCircle className="w-3.5 h-3.5 text-rose-500" />
+                      <span>{lang === 'ar' ? 'الموجه السلبي (المستبعدات)' : 'Negative Prompt'}</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={negativePrompt}
+                      onChange={(e) => setNegativePrompt(e.target.value)}
+                      placeholder="Artifacts, distortion, blurry, low frame rate, watermarks"
+                      className="w-full text-xs p-2.5 rounded-lg border border-[#E3E6EF] focus:border-[#635BFF] outline-hidden bg-[#FCFCFD]"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-[#11152B] flex items-center gap-1.5">
+                      <Video className="w-3.5 h-3.5 text-[#635BFF]" />
+                      <span>{lang === 'ar' ? 'نموذج التوليد المستهدف' : 'Target AI Model / Provider'}</span>
+                    </label>
+                    <select
+                      value={targetProvider}
+                      onChange={(e) => setTargetProvider(e.target.value)}
+                      className="w-full text-xs p-2.5 rounded-lg border border-[#E3E6EF] focus:border-[#635BFF] outline-hidden bg-white"
+                    >
+                      <option value="gemini_omni">Gemini Omni (gemini-omni-1.1-flash)</option>
+                      <option value="runway_gen3">Runway Gen-3 Alpha (Demo / External)</option>
+                      <option value="luma_dream">Luma Dream Machine Ray 2 (Demo)</option>
+                      <option value="local_demo">Local Prototype Engine</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* 4. Audio & Voiceover Cues */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-[#11152B] flex items-center gap-1.5">
+                    <Volume2 className="w-3.5 h-3.5 text-[#635BFF]" />
+                    <span>{lang === 'ar' ? 'تعليمات الصوت والمؤثرات المتزامنة' : 'Audio & Sound Design Synchronization'}</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={audioInstructions}
+                    onChange={(e) => setAudioInstructions(e.target.value)}
+                    placeholder="Ambient room tone, subtle cinematic drone, crisp dialogue cue"
+                    className="w-full text-xs p-2.5 rounded-lg border border-[#E3E6EF] focus:border-[#635BFF] outline-hidden bg-[#FCFCFD]"
+                  />
+                </div>
+
+                {/* Bottom Actions */}
+                <div className="pt-3 border-t border-[#E3E6EF] flex items-center justify-between">
+                  <div className="text-xs text-[#62677A] font-mono">
+                    Target: <span className="text-[#11152B] font-semibold">Shot {activeShot.shotNumber}</span> ({activeShot.durationSeconds}s)
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSaveCurrentPrompt}
+                      disabled={isSaving}
+                      className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#11152B] hover:bg-black rounded-lg transition-colors cursor-pointer"
+                    >
+                      {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                      <span>{lang === 'ar' ? 'حفظ الإصدار للقطة' : 'Save Shot Version'}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="p-12 text-center bg-white border border-[#E3E6EF] rounded-xl text-[#62677A] text-xs">
+              Select a shot from the left sidebar to compose prompts.
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 };

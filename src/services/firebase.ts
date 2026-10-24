@@ -101,7 +101,6 @@ export function isOfflineError(error: unknown): boolean {
   const code = (error as any)?.code;
   return (
     code === 'unavailable' ||
-    code === 'failed-precondition' ||
     msg.includes('client is offline') ||
     msg.includes('the client is offline') ||
     msg.includes('offline') ||
