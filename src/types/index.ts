@@ -297,6 +297,15 @@ export interface Project {
   isLocalOnly: boolean;
   migratedFromLocal?: boolean;
   migratedAt?: string;
+  cloudSyncStatus?: 'synced' | 'pending' | 'failed' | 'local_only';
+  lastSyncedAt?: string;
+}
+
+export interface SaveProjectResult {
+  success: boolean;
+  syncStatus: 'synced' | 'pending' | 'failed';
+  source: 'server' | 'cache_queued';
+  error?: unknown;
 }
 
 export interface VideoTemplate {

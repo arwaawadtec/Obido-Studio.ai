@@ -527,10 +527,13 @@ class StorageService {
    */
   handleUserSignOut(signedOutUserId?: string) {
     try {
+      const hasLocalStorage = typeof localStorage !== 'undefined';
       if (!signedOutUserId) {
-        try {
-          localStorage.removeItem(ACTIVE_PROJECT_KEY);
-        } catch {}
+        if (hasLocalStorage) {
+          try {
+            localStorage.removeItem(ACTIVE_PROJECT_KEY);
+          } catch {}
+        }
         this.projects = [...SAMPLE_PROJECTS];
         this.persist();
         return;
@@ -541,7 +544,7 @@ class StorageService {
 
       // 2. Identify and quarantine any unsynchronized local drafts so they are not permanently deleted
       const unsyncedDrafts = userProjects.filter((p) => p.isLocalOnly === true && !p.migratedFromLocal);
-      if (unsyncedDrafts.length > 0) {
+      if (unsyncedDrafts.length > 0 && hasLocalStorage) {
         const quarantineKey = `obido_studio_unsynced_${signedOutUserId}`;
         try {
           localStorage.setItem(quarantineKey, JSON.stringify(unsyncedDrafts));
@@ -554,22 +557,24 @@ class StorageService {
       const remainingProjects = this.projects.filter((p) => p.userId !== signedOutUserId);
       this.projects = remainingProjects.length > 0 ? remainingProjects : [...SAMPLE_PROJECTS];
 
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.projects));
-      } catch (e) {
-        console.warn('[StorageService] Failed to persist cleaned projects on signout:', e);
-      }
-
-      // 4. Invalidate active project if it was owned by the signed-out user
-      try {
-        const activeId = localStorage.getItem(ACTIVE_PROJECT_KEY);
-        if (activeId) {
-          const wasOwnedBySignoutUser = userProjects.some((p) => p.id === activeId);
-          if (wasOwnedBySignoutUser) {
-            localStorage.removeItem(ACTIVE_PROJECT_KEY);
-          }
+      if (hasLocalStorage) {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(this.projects));
+        } catch (e) {
+          console.warn('[StorageService] Failed to persist cleaned projects on signout:', e);
         }
-      } catch {}
+
+        // 4. Invalidate active project if it was owned by the signed-out user
+        try {
+          const activeId = localStorage.getItem(ACTIVE_PROJECT_KEY);
+          if (activeId) {
+            const wasOwnedBySignoutUser = userProjects.some((p) => p.id === activeId);
+            if (wasOwnedBySignoutUser) {
+              localStorage.removeItem(ACTIVE_PROJECT_KEY);
+            }
+          }
+        } catch {}
+      }
     } catch (err) {
       console.error('[StorageService] Error during user sign-out cache cleanup:', err);
       this.projects = [...SAMPLE_PROJECTS];
@@ -582,7 +587,7 @@ class StorageService {
    * Restores any quarantined unsynchronized drafts when the user logs back in.
    */
   restoreUserUnsyncedDrafts(userId: string) {
-    if (!userId || userId === 'user_default') return;
+    if (!userId || userId === 'user_default' || typeof localStorage === 'undefined') return;
     const quarantineKey = `obido_studio_unsynced_${userId}`;
     try {
       const stored = localStorage.getItem(quarantineKey);
@@ -617,11 +622,55 @@ class StorageService {
       try {
         const rawCloudProjects = await firestoreService.getProjects(userId);
         const cloudProjects = rawCloudProjects.map((p) => migrateProjectToShots(p));
-        // Update local memory cache with latest cloud documents
+
+        // Reconcile cloud projects with local pending edits
+        const localUserProjects = this.projects.filter((p) => p.userId === userId);
+        const localMap = new Map<string, Project>(localUserProjects.map((p) => [p.id, p]));
+
+        const reconciledUserProjects: Project[] = [];
+        const seenIds = new Set<string>();
+
+        for (const cloudP of cloudProjects) {
+          seenIds.add(cloudP.id);
+          const localP = localMap.get(cloudP.id);
+          if (localP) {
+            // Check if local version has newer un-synced edits
+            const localTime = new Date(localP.updatedAt || localP.createdAt).getTime();
+            const cloudTime = new Date(cloudP.updatedAt || cloudP.createdAt).getTime();
+            const hasPendingSync = localP.cloudSyncStatus === 'pending';
+
+            if (hasPendingSync && localTime > cloudTime) {
+              // Preserve local version and trigger background sync to cloud
+              reconciledUserProjects.push(localP);
+              firestoreService.saveProject(localP, userId).catch(() => {});
+            } else {
+              // Cloud version is up-to-date or newer
+              reconciledUserProjects.push({
+                ...cloudP,
+                cloudSyncStatus: 'synced',
+              });
+            }
+          } else {
+            reconciledUserProjects.push({
+              ...cloudP,
+              cloudSyncStatus: 'synced',
+            });
+          }
+        }
+
+        // Preserve any local projects created offline that haven't reached cloud yet
+        for (const localP of localUserProjects) {
+          if (!seenIds.has(localP.id)) {
+            reconciledUserProjects.push(localP);
+            firestoreService.saveProject(localP, userId).catch(() => {});
+          }
+        }
+
+        // Update local memory cache with latest documents
         const otherProjects = this.projects.filter((p) => p.userId !== userId);
-        this.projects = [...otherProjects, ...cloudProjects];
+        this.projects = [...otherProjects, ...reconciledUserProjects];
         this.persist();
-        return cloudProjects;
+        return reconciledUserProjects;
       } catch (err) {
         const classification = classifyConnectionError(err);
         if (classification === 'permanent_offline') {
@@ -706,6 +755,7 @@ class StorageService {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       isLocalOnly: !isCloudUser,
+      cloudSyncStatus: isCloudUser ? 'pending' : 'local_only',
       brief: {
         title: briefData.title || 'Untitled Video Project',
         purpose: briefData.purpose || 'explainer',
@@ -745,9 +795,21 @@ class StorageService {
     this.persist();
 
     if (isCloudUser) {
-      firestoreService.saveProject(newProject, finalOwnerId).catch((err) => {
-        console.warn('[StorageService] Background cloud save error:', err);
-      });
+      firestoreService.saveProject(newProject, finalOwnerId)
+        .then((res) => {
+          if (res?.syncStatus === 'synced') {
+            const p = this.projects.find((proj) => proj.id === id);
+            if (p) {
+              p.cloudSyncStatus = 'synced';
+              p.lastSyncedAt = new Date().toISOString();
+              this.persist();
+              this.notify();
+            }
+          }
+        })
+        .catch((err) => {
+          console.warn('[StorageService] Background cloud save error:', err);
+        });
     }
 
     return newProject;
@@ -776,19 +838,44 @@ class StorageService {
     const idx = this.projects.findIndex((p) => p.id === id);
     if (idx === -1) return undefined;
 
+    const isCloudUser =
+      firestoreService.isAvailable() &&
+      this.projects[idx].userId !== 'user_default' &&
+      !this.projects[idx].userId.startsWith('user_demo_');
+
     this.projects[idx] = {
       ...this.projects[idx],
       ...updates,
+      cloudSyncStatus: isCloudUser ? 'pending' : (this.projects[idx].cloudSyncStatus || 'local_only'),
       updatedAt: new Date().toISOString(),
     };
 
     const updated = this.projects[idx];
     this.persist();
 
-    if (firestoreService.isAvailable() && updated.userId !== 'user_default' && !updated.userId.startsWith('user_demo_')) {
-      firestoreService.saveProject(updated, updated.userId).catch((err) => {
-        console.warn('[StorageService] Background cloud update error:', err);
-      });
+    if (isCloudUser) {
+      firestoreService.saveProject(updated, updated.userId)
+        .then((res) => {
+          if (res?.syncStatus === 'synced') {
+            const p = this.projects.find((proj) => proj.id === id);
+            if (p) {
+              p.cloudSyncStatus = 'synced';
+              p.lastSyncedAt = new Date().toISOString();
+              this.persist();
+              this.notify();
+            }
+          } else if (res?.syncStatus === 'failed') {
+            const p = this.projects.find((proj) => proj.id === id);
+            if (p) {
+              p.cloudSyncStatus = 'failed';
+              this.persist();
+              this.notify();
+            }
+          }
+        })
+        .catch((err) => {
+          console.warn('[StorageService] Background cloud update error:', err);
+        });
     }
 
     return updated;

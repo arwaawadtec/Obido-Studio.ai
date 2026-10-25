@@ -24,7 +24,7 @@ import {
   OperationType,
   ConnectionClassification,
 } from './firebase';
-import { Project, User, Asset } from '../types';
+import { Project, User, Asset, SaveProjectResult } from '../types';
 
 export type ProfileReadStatus = 'found' | 'not_found' | 'unavailable';
 
@@ -239,9 +239,14 @@ export class FirestoreService {
   }
 
   // --- Projects ---
-  async saveProject(project: Project, userId: string): Promise<void> {
+  async saveProject(project: Project, userId: string): Promise<SaveProjectResult> {
     if (!this.isAvailable()) {
-      throw new Error('Cloud database is not available.');
+      return {
+        success: false,
+        syncStatus: 'failed',
+        source: 'cache_queued',
+        error: new Error('Cloud database is not available.'),
+      };
     }
     const path = `projects/${project.id}`;
     try {
@@ -249,18 +254,36 @@ export class FirestoreService {
         ...project,
         userId,
         isLocalOnly: false,
-        updatedAt: new Date().toISOString(),
+        cloudSyncStatus: 'synced',
+        lastSyncedAt: new Date().toISOString(),
+        updatedAt: project.updatedAt || new Date().toISOString(),
       });
       await executeWithFirestoreRetry(
         () => setDoc(doc(db, 'projects', project.id), payload, { merge: true }),
         { operationName: `saveProject(${project.id})` }
       );
+      return {
+        success: true,
+        syncStatus: 'synced',
+        source: 'server',
+      };
     } catch (error) {
       if (isOfflineError(error)) {
         console.warn(`[FirestoreService] Client is offline; queued project write for ${path}`);
-        return;
+        return {
+          success: false,
+          syncStatus: 'pending',
+          source: 'cache_queued',
+          error,
+        };
       }
       handleFirestoreError(error, OperationType.WRITE, path);
+      return {
+        success: false,
+        syncStatus: 'failed',
+        source: 'cache_queued',
+        error,
+      };
     }
   }
 

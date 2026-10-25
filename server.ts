@@ -4,6 +4,7 @@ import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import { getAIProvider, aiRegistry } from './server/providers';
 import { normalizeAIError } from './server/resilience/retry';
+import { domainService } from './src/services/domainService';
 
 dotenv.config();
 
@@ -513,6 +514,225 @@ app.post('/api/project/validate-containment', requireAuth, async (req, res) => {
     clipCount: Array.isArray(project.timeline?.clips) ? project.timeline.clips.length : 0,
     timestamp: new Date().toISOString(),
   });
+});
+
+// Authoritative Server-Side Project Mutation Endpoint
+app.post('/api/project/mutate', requireAuth, async (req, res) => {
+  const verifiedUid = (req as any).user?.verifiedUid;
+  const { projectId, mutationType, payload, project } = req.body;
+
+  if (!project || typeof project !== 'object') {
+    return sendApiError(res, 400, {
+      code: 'INVALID_PAYLOAD',
+      message: 'Base project object is required for authoritative mutation.',
+      stage: 'validation',
+      retryable: false,
+    });
+  }
+
+  // 1. Authoritative ownership check - reject client-supplied ownership claim conflicting with token
+  if (!project.userId || project.userId !== verifiedUid) {
+    return sendApiError(res, 403, {
+      code: 'PROJECT_ACCESS_DENIED',
+      message: `Forbidden: Project belongs to user "${project.userId}", not authenticated user "${verifiedUid}".`,
+      field: 'userId',
+      stage: 'authorization',
+      retryable: false,
+    });
+  }
+
+  if (projectId && project.id !== projectId) {
+    return sendApiError(res, 400, {
+      code: 'PROJECT_ID_MISMATCH',
+      message: `Project ID in URL/body (${projectId}) does not match project object (${project.id}).`,
+      stage: 'validation',
+      retryable: false,
+    });
+  }
+
+  // 2. Pre-mutation entity containment verification - cannot be bypassed
+  const preContainment = validateProjectEntityContainment(project, verifiedUid);
+  if (!preContainment.valid) {
+    return sendApiError(res, 400, {
+      code: 'INVALID_CONTAINMENT',
+      message: 'Pre-mutation entity containment violation: ' + preContainment.errors[0],
+      details: preContainment.errors.join('; '),
+      stage: 'validation',
+      retryable: false,
+    });
+  }
+
+  // 3. Allowed mutation types and validation
+  const allowedMutations = [
+    'reorder_scenes',
+    'cascade_delete_scene',
+    'reorder_shots',
+    'cascade_delete_shot',
+    'create_prompt_version',
+    'activate_prompt_version',
+    'attach_asset',
+    'update_project_meta',
+  ];
+
+  if (!mutationType || !allowedMutations.includes(mutationType)) {
+    return sendApiError(res, 400, {
+      code: 'INVALID_MUTATION_TYPE',
+      message: `Mutation type "${mutationType}" is not recognized or permitted. Allowed: ${allowedMutations.join(', ')}`,
+      field: 'mutationType',
+      stage: 'validation',
+      retryable: false,
+    });
+  }
+
+  // 4. Execute domain mutation safely
+  try {
+    let mutatedProject = { ...project };
+
+    switch (mutationType) {
+      case 'reorder_scenes': {
+        const { sourceIndex, destinationIndex } = payload || {};
+        if (typeof sourceIndex !== 'number' || typeof destinationIndex !== 'number') {
+          return sendApiError(res, 400, {
+            code: 'INVALID_PAYLOAD',
+            message: 'sourceIndex and destinationIndex (numbers) are required for reorder_scenes.',
+            stage: 'mutation',
+            retryable: false,
+          });
+        }
+        mutatedProject = domainService.reorderScenes(mutatedProject, sourceIndex, destinationIndex);
+        break;
+      }
+      case 'cascade_delete_scene': {
+        const { sceneId } = payload || {};
+        if (!sceneId || typeof sceneId !== 'string') {
+          return sendApiError(res, 400, {
+            code: 'INVALID_PAYLOAD',
+            message: 'sceneId is required for cascade_delete_scene.',
+            stage: 'mutation',
+            retryable: false,
+          });
+        }
+        domainService.assertEntityContainment(mutatedProject, 'scene', sceneId);
+        mutatedProject = domainService.cascadeDeleteScene(mutatedProject, sceneId);
+        break;
+      }
+      case 'reorder_shots': {
+        const { sceneId, sourceIndex, destinationIndex } = payload || {};
+        if (!sceneId || typeof sourceIndex !== 'number' || typeof destinationIndex !== 'number') {
+          return sendApiError(res, 400, {
+            code: 'INVALID_PAYLOAD',
+            message: 'sceneId, sourceIndex, and destinationIndex are required for reorder_shots.',
+            stage: 'mutation',
+            retryable: false,
+          });
+        }
+        domainService.assertEntityContainment(mutatedProject, 'scene', sceneId);
+        mutatedProject = domainService.reorderShotsInScene(mutatedProject, sceneId, sourceIndex, destinationIndex);
+        break;
+      }
+      case 'cascade_delete_shot': {
+        const { shotId } = payload || {};
+        if (!shotId || typeof shotId !== 'string') {
+          return sendApiError(res, 400, {
+            code: 'INVALID_PAYLOAD',
+            message: 'shotId is required for cascade_delete_shot.',
+            stage: 'mutation',
+            retryable: false,
+          });
+        }
+        domainService.assertEntityContainment(mutatedProject, 'shot', shotId);
+        mutatedProject = domainService.cascadeDeleteShot(mutatedProject, shotId);
+        break;
+      }
+      case 'create_prompt_version': {
+        const { shotId, promptData } = payload || {};
+        if (!shotId || !promptData) {
+          return sendApiError(res, 400, {
+            code: 'INVALID_PAYLOAD',
+            message: 'shotId and promptData are required for create_prompt_version.',
+            stage: 'mutation',
+            retryable: false,
+          });
+        }
+        domainService.assertEntityContainment(mutatedProject, 'shot', shotId);
+        const resObj = domainService.createShotPromptVersion(mutatedProject, shotId, promptData);
+        mutatedProject = resObj.project;
+        break;
+      }
+      case 'activate_prompt_version': {
+        const { shotId, versionId } = payload || {};
+        if (!shotId || !versionId) {
+          return sendApiError(res, 400, {
+            code: 'INVALID_PAYLOAD',
+            message: 'shotId and versionId are required for activate_prompt_version.',
+            stage: 'mutation',
+            retryable: false,
+          });
+        }
+        domainService.assertEntityContainment(mutatedProject, 'shot', shotId);
+        mutatedProject = domainService.activateShotPromptVersion(mutatedProject, shotId, versionId);
+        break;
+      }
+      case 'attach_asset': {
+        const { shotId, assetId } = payload || {};
+        if (!shotId || !assetId) {
+          return sendApiError(res, 400, {
+            code: 'INVALID_PAYLOAD',
+            message: 'shotId and assetId are required for attach_asset.',
+            stage: 'mutation',
+            retryable: false,
+          });
+        }
+        domainService.assertEntityContainment(mutatedProject, 'shot', shotId);
+        domainService.assertEntityContainment(mutatedProject, 'asset', assetId);
+        mutatedProject = domainService.attachActiveTakeAsset(mutatedProject, shotId, assetId);
+        break;
+      }
+      case 'update_project_meta': {
+        const { title, description } = payload || {};
+        mutatedProject = {
+          ...mutatedProject,
+          ...(title ? { title } : {}),
+          ...(description !== undefined ? { description } : {}),
+          updatedAt: new Date().toISOString(),
+        };
+        break;
+      }
+      default:
+        return sendApiError(res, 400, {
+          code: 'INVALID_MUTATION_TYPE',
+          message: `Unhandled mutation type: ${mutationType}`,
+          stage: 'mutation',
+          retryable: false,
+        });
+    }
+
+    // 5. Post-mutation containment validation
+    const postContainment = validateProjectEntityContainment(mutatedProject, verifiedUid);
+    if (!postContainment.valid) {
+      return sendApiError(res, 400, {
+        code: 'INVALID_CONTAINMENT',
+        message: 'Post-mutation entity containment violation: ' + postContainment.errors[0],
+        details: postContainment.errors.join('; '),
+        stage: 'mutation',
+        retryable: false,
+      });
+    }
+
+    res.json({
+      success: true,
+      mutationType,
+      project: mutatedProject,
+      mutatedAt: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    return sendApiError(res, 400, {
+      code: err.code || 'MUTATION_FAILED',
+      message: err.message || 'Domain mutation failed.',
+      stage: 'mutation',
+      retryable: false,
+    });
+  }
 });
 
 // AI Script Generation Endpoint
