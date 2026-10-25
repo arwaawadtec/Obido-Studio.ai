@@ -5,7 +5,12 @@ import { auth } from './auth';
  * Supports both real Firebase ID tokens and non-production demo tokens.
  */
 export async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
-  const token = await auth.getIdToken();
+  let token: string | null = null;
+  try {
+    token = await auth.getIdToken();
+  } catch (err) {
+    console.warn('[authenticatedFetch] Could not retrieve ID token:', err);
+  }
   const headers = new Headers(init.headers || {});
 
   if (token && !headers.has('Authorization')) {

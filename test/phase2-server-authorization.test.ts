@@ -89,20 +89,25 @@ async function runPhase2AuthorizationTests() {
       nextCalled = true;
     });
 
-    assert.strictEqual(nextCalled, true, 'Demo token extracted');
-    assert.strictEqual(req.user?.verifiedUid, authenticatedUid, 'Derived UID must match token');
+    assert.strictEqual(nextCalled, false, 'Next should not be called when identity mismatch detected');
+    assert.strictEqual(res.statusCode, 403, 'Expected 403 IDENTITY_MISMATCH');
+    assert.strictEqual(res.body?.code, 'IDENTITY_MISMATCH');
 
-    // Direct check of claimed UID vs verified UID enforcement
-    const spoofReq: any = {
-      headers: {},
+    // Also verify that valid matching token successfully passes
+    const validReq: any = {
+      headers: {
+        authorization: `Bearer demo_token_${authenticatedUid}`,
+      },
       body: {
-        token: `demo_token_${authenticatedUid}`,
-        userId: foreignUid,
+        userId: authenticatedUid,
       },
     };
-    // If a request claims userId !== verifiedUid, server blocks it
-    const isMismatch = spoofReq.body.userId !== authenticatedUid;
-    assert.strictEqual(isMismatch, true, 'Claimed identity mismatch correctly identified');
+    let validNextCalled = false;
+    requireAuth(validReq, createMockResponse(), () => {
+      validNextCalled = true;
+    });
+    assert.strictEqual(validNextCalled, true, 'Next called for valid matching token');
+    assert.strictEqual(validReq.user?.verifiedUid, authenticatedUid, 'Derived UID matches token');
     console.log('  ✓ 2. Server derives UID strictly from token and detects identity mismatch');
   }
 

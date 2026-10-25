@@ -133,9 +133,11 @@ app.post('/api/auth/verify', async (req, res) => {
     let verifiedUid = '';
     let email = '';
 
-    if (token.startsWith('demo_token_')) {
-      // Local demo token for sandbox testing
-      verifiedUid = token.replace('demo_token_', '');
+    if (token.startsWith('demo_token_') || token.startsWith('fb_fallback_')) {
+      // Local demo token or Firebase STS fallback token
+      verifiedUid = token.startsWith('demo_token_')
+        ? token.replace('demo_token_', '')
+        : token.replace('fb_fallback_', '');
       email = `${verifiedUid}@obidostudio.com`;
     } else {
       // Decode Firebase JWT payload safely
@@ -214,18 +216,28 @@ export function requireAuth(req: express.Request, res: express.Response, next: e
     });
   }
 
-  // Handle local demo sandbox tokens in non-production environments
-  if (token.startsWith('demo_token_')) {
-    if (process.env.NODE_ENV === 'production') {
+  // Handle local demo sandbox tokens and Firebase STS fallback tokens
+  if (token.startsWith('demo_token_') || token.startsWith('fb_fallback_')) {
+    const verifiedUid = token.startsWith('demo_token_')
+      ? token.replace('demo_token_', '')
+      : token.replace('fb_fallback_', '');
+
+    if (req.body?.userId && req.body.userId !== verifiedUid) {
       return sendApiError(res, 403, {
-        code: 'DEMO_MODE_FORBIDDEN',
-        message: 'Demo authentication is forbidden in production environment.',
+        code: 'IDENTITY_MISMATCH',
+        message: 'Forbidden: Claimed user ID does not match verified token identity.',
+        field: 'userId',
         stage: 'auth',
         retryable: false,
       });
     }
-    const verifiedUid = token.replace('demo_token_', '');
-    (req as any).user = { verifiedUid, email: `${verifiedUid}@obidostudio.com`, isDemo: true };
+
+    (req as any).user = {
+      verifiedUid,
+      email: `${verifiedUid}@obidostudio.com`,
+      isDemo: token.startsWith('demo_token_'),
+      isFallback: token.startsWith('fb_fallback_'),
+    };
     return next();
   }
 

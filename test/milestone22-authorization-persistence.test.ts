@@ -76,25 +76,25 @@ async function runMilestone22Tests() {
 
   // Test 2: Rejects client-supplied identity spoofing
   {
-    const req: any = {
+    const spoofReq: any = {
       headers: { authorization: `Bearer demo_token_${creatorUid}` },
       body: { userId: attackerUid },
     };
     const res = createMockResponse();
-    requireAuth(req, res, () => {});
+    let nextCalled = false;
+    requireAuth(spoofReq, res, () => { nextCalled = true; });
 
-    // Token derives creatorUid
-    assert.strictEqual(req.user?.verifiedUid, creatorUid);
-    // If client attempts to mutate claiming another user's project:
-    const projectClaimingAttacker = {
-      id: 'proj_auth_test_1',
-      userId: attackerUid,
-      title: 'Target Project',
-      scenes: [],
-      shots: [],
+    assert.strictEqual(nextCalled, false, 'Identity spoofing must be blocked');
+    assert.strictEqual(res.statusCode, 403);
+    assert.strictEqual(res.body?.code, 'IDENTITY_MISMATCH');
+
+    // Valid request correctly derives UID from token
+    const validReq: any = {
+      headers: { authorization: `Bearer demo_token_${creatorUid}` },
+      body: { userId: creatorUid },
     };
-    const isOwner = projectClaimingAttacker.userId === req.user?.verifiedUid;
-    assert.strictEqual(isOwner, false, 'Ownership claim must mismatch verified token UID');
+    requireAuth(validReq, createMockResponse(), () => {});
+    assert.strictEqual(validReq.user?.verifiedUid, creatorUid);
     console.log('  ✓ 2. Workstream A: Server derives identity from verified token, blocking claimed UID spoofing');
   }
 

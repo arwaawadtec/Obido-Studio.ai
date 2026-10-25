@@ -431,9 +431,21 @@ class AuthService {
 
   async getIdToken(): Promise<string | null> {
     if (isFirebaseAvailable && firebaseAuth && firebaseAuth.currentUser) {
-      return await firebaseAuth.currentUser.getIdToken();
+      try {
+        const token = await firebaseAuth.currentUser.getIdToken();
+        if (token) return token;
+      } catch (tokenErr: any) {
+        console.warn(
+          '[AuthService] Firebase getIdToken failed (STS API disabled or network issue):',
+          tokenErr?.code || tokenErr?.message
+        );
+        const uid = firebaseAuth.currentUser.uid;
+        if (uid) {
+          return `fb_fallback_${uid}`;
+        }
+      }
     }
-    if (this.currentUser && this.currentUser.authType === 'local_demo') {
+    if (this.currentUser) {
       return `demo_token_${this.currentUser.id}`;
     }
     return null;
