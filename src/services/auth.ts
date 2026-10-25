@@ -97,6 +97,9 @@ class AuthService {
   private syncEpoch = 0;
   private pendingSyncUid: string | null = null;
   private hasPendingProfileSync = false;
+  private reconnectionListenersRegistered = false;
+  private activeSyncPromise: Promise<User> | null = null;
+  private lastReconnectSyncTimestamp = 0;
 
   constructor() {
     this.init();
@@ -139,17 +142,7 @@ class AuthService {
       });
 
       // 3. Reconnection & Visibility recovery listeners
-      window.addEventListener('online', () => {
-        this.retryProfileSyncOnReconnect();
-      });
-
-      if (typeof document !== 'undefined') {
-        document.addEventListener('visibilitychange', () => {
-          if (document.visibilityState === 'visible' && this.hasPendingProfileSync) {
-            this.retryProfileSyncOnReconnect();
-          }
-        });
-      }
+      this.registerReconnectionListeners();
     }
 
     if (isFirebaseAvailable && firebaseAuth) {
@@ -207,104 +200,49 @@ class AuthService {
    * 5. Cache integrity: Strictly verifies cached profile belongs to the authenticated UID.
    */
   private async syncFirebaseUser(fbUser: FirebaseUser): Promise<User> {
-    const currentEpoch = ++this.syncEpoch;
     const targetUid = fbUser.uid;
+    if (this.activeSyncPromise && this.pendingSyncUid === targetUid) {
+      return this.activeSyncPromise;
+    }
+
+    const currentEpoch = ++this.syncEpoch;
     this.pendingSyncUid = targetUid;
 
-    let readResult: UserProfileResult;
-    try {
-      readResult = await firestoreService.getUserProfileWithStatus(targetUid);
-    } catch (e) {
-      console.warn('[AuthService] Firestore profile retrieval unexpected failure:', e);
-      readResult = { status: 'unavailable', reason: 'exception', error: e };
-    }
-
-    // Race protection check: if a new sync started or UID changed while awaiting, abort
-    if (this.syncEpoch !== currentEpoch || this.pendingSyncUid !== targetUid) {
-      console.info(`[AuthService] Sync callback for ${targetUid} discarded (epoch ${currentEpoch} superseded)`);
-      return this.currentUser!;
-    }
-
-    let appUser: User;
-
-    if (readResult.status === 'found' && readResult.user) {
-      // --- CASE A: Confirmed Existing Profile in Firestore ---
-      this.hasPendingProfileSync = false;
-      const existing = readResult.user;
-      appUser = {
-        ...existing,
-        id: targetUid,
-        email: fbUser.email || existing.email,
-        name: fbUser.displayName || existing.name || 'Studio Creator',
-        avatar: fbUser.photoURL || existing.avatar,
-        authType: 'cloud',
-        firebaseUid: targetUid,
-        lastLoginAt: new Date().toISOString(),
-      };
-    } else if (readResult.status === 'not_found') {
-      // --- CASE B: Confirmed Absence of Profile Document ---
-      // Positively established that document does not exist. Safe to create and persist default profile.
-      this.hasPendingProfileSync = false;
-      appUser = {
-        id: targetUid,
-        name: fbUser.displayName || (fbUser.email?.split('@')[0] ?? 'Studio Creator'),
-        email: fbUser.email || '',
-        role: 'creator',
-        tier: 'pro',
-        authType: 'cloud',
-        firebaseUid: targetUid,
-        ...(fbUser.photoURL ? { avatar: fbUser.photoURL } : {}),
-        hasCompletedOnboarding: false,
-        preferences: {
-          useCase: 'content_creation',
-          experienceLevel: 'intermediate',
-          language: 'en',
-        },
-        createdAt: new Date().toISOString(),
-        lastLoginAt: new Date().toISOString(),
-      };
-
+    const syncWork = async (): Promise<User> => {
+      let readResult: UserProfileResult;
       try {
-        await firestoreService.saveUserProfile(appUser);
-      } catch (saveErr) {
-        console.warn('[AuthService] Initial user profile cloud save deferred:', saveErr);
-      }
-    } else {
-      // --- CASE C: Read Unavailable (Client offline, network timeout, or unresolved) ---
-      // CRITICAL: NEVER call firestoreService.saveUserProfile()! Do NOT persist default data!
-      this.hasPendingProfileSync = true;
-
-      // Check cache strictly for targetUid
-      let matchingCache: User | null = null;
-      if (this.currentUser && (this.currentUser.id === targetUid || this.currentUser.firebaseUid === targetUid)) {
-        matchingCache = this.currentUser;
-      } else {
-        try {
-          const cachedRaw = safeStorage.getItem(AUTH_USER_KEY);
-          if (cachedRaw) {
-            const parsed = JSON.parse(cachedRaw);
-            if (parsed && (parsed.id === targetUid || parsed.firebaseUid === targetUid)) {
-              matchingCache = parsed;
-            }
-          }
-        } catch (cacheErr) {
-          console.warn('[AuthService] Failed to read cached profile:', cacheErr);
-        }
+        readResult = await firestoreService.getUserProfileWithStatus(targetUid);
+      } catch (e) {
+        console.warn('[AuthService] Firestore profile retrieval unexpected failure:', e);
+        readResult = { status: 'unavailable', reason: 'exception', error: e };
       }
 
-      if (matchingCache) {
-        // Provisional session adopting cached state
+      // Race protection check: if a new sync started or UID changed while awaiting, abort
+      if (this.syncEpoch !== currentEpoch || this.pendingSyncUid !== targetUid) {
+        console.info(`[AuthService] Sync callback for ${targetUid} discarded (epoch ${currentEpoch} superseded)`);
+        return this.currentUser!;
+      }
+
+      let appUser: User;
+
+      if (readResult.status === 'found' && readResult.user) {
+        // --- CASE A: Confirmed Existing Profile in Firestore ---
+        this.hasPendingProfileSync = false;
+        const existing = readResult.user;
         appUser = {
-          ...matchingCache,
+          ...existing,
           id: targetUid,
-          email: fbUser.email || matchingCache.email,
-          name: fbUser.displayName || matchingCache.name || 'Studio Creator',
-          avatar: fbUser.photoURL || matchingCache.avatar,
+          email: fbUser.email || existing.email,
+          name: fbUser.displayName || existing.name || 'Studio Creator',
+          avatar: fbUser.photoURL || existing.avatar,
           authType: 'cloud',
           firebaseUid: targetUid,
+          lastLoginAt: new Date().toISOString(),
         };
-      } else {
-        // Ephemeral in-memory fallback for user session without overwriting cloud data
+      } else if (readResult.status === 'not_found') {
+        // --- CASE B: Confirmed Absence of Profile Document ---
+        // Positively established that document does not exist. Safe to create and persist default profile.
+        this.hasPendingProfileSync = false;
         appUser = {
           id: targetUid,
           name: fbUser.displayName || (fbUser.email?.split('@')[0] ?? 'Studio Creator'),
@@ -323,26 +261,94 @@ class AuthService {
           createdAt: new Date().toISOString(),
           lastLoginAt: new Date().toISOString(),
         };
-        // NOTE: NO saveUserProfile is called!
+
+        try {
+          await firestoreService.saveUserProfile(appUser);
+        } catch (saveErr) {
+          console.warn('[AuthService] Initial user profile cloud save deferred:', saveErr);
+        }
+      } else {
+        // --- CASE C: Read Unavailable (Client offline, network timeout, or unresolved) ---
+        // CRITICAL: NEVER call firestoreService.saveUserProfile()! Do NOT persist default data!
+        this.hasPendingProfileSync = true;
+
+        // Check cache strictly for targetUid
+        let matchingCache: User | null = null;
+        if (this.currentUser && (this.currentUser.id === targetUid || this.currentUser.firebaseUid === targetUid)) {
+          matchingCache = this.currentUser;
+        } else {
+          try {
+            const cachedRaw = safeStorage.getItem(AUTH_USER_KEY);
+            if (cachedRaw) {
+              const parsed = JSON.parse(cachedRaw);
+              if (parsed && (parsed.id === targetUid || parsed.firebaseUid === targetUid)) {
+                matchingCache = parsed;
+              }
+            }
+          } catch (cacheErr) {
+            console.warn('[AuthService] Failed to read cached profile:', cacheErr);
+          }
+        }
+
+        if (matchingCache) {
+          // Provisional session adopting cached state
+          appUser = {
+            ...matchingCache,
+            id: targetUid,
+            email: fbUser.email || matchingCache.email,
+            name: fbUser.displayName || matchingCache.name || 'Studio Creator',
+            avatar: fbUser.photoURL || matchingCache.avatar,
+            authType: 'cloud',
+            firebaseUid: targetUid,
+          };
+        } else {
+          // Ephemeral in-memory fallback for user session without overwriting cloud data
+          appUser = {
+            id: targetUid,
+            name: fbUser.displayName || (fbUser.email?.split('@')[0] ?? 'Studio Creator'),
+            email: fbUser.email || '',
+            role: 'creator',
+            tier: 'pro',
+            authType: 'cloud',
+            firebaseUid: targetUid,
+            ...(fbUser.photoURL ? { avatar: fbUser.photoURL } : {}),
+            hasCompletedOnboarding: false,
+            preferences: {
+              useCase: 'content_creation',
+              experienceLevel: 'intermediate',
+              language: 'en',
+            },
+            createdAt: new Date().toISOString(),
+            lastLoginAt: new Date().toISOString(),
+          };
+          // NOTE: NO saveUserProfile is called!
+        }
       }
-    }
 
-    // Final epoch guard before committing state
-    if (this.syncEpoch !== currentEpoch || this.pendingSyncUid !== targetUid) {
-      console.info(`[AuthService] Stale auth sync callback aborted during commit for ${targetUid}`);
-      return this.currentUser!;
-    }
+      // Final epoch guard before committing state
+      if (this.syncEpoch !== currentEpoch || this.pendingSyncUid !== targetUid) {
+        console.info(`[AuthService] Stale auth sync callback aborted during commit for ${targetUid}`);
+        return this.currentUser!;
+      }
 
-    this.currentUser = appUser;
-    safeStorage.setItem(AUTH_USER_KEY, JSON.stringify(appUser));
-    try {
-      storage.restoreUserUnsyncedDrafts(appUser.id);
-    } catch {}
-    return appUser;
+      this.currentUser = appUser;
+      safeStorage.setItem(AUTH_USER_KEY, JSON.stringify(appUser));
+      try {
+        storage.restoreUserUnsyncedDrafts(appUser.id);
+      } catch {}
+      return appUser;
+    };
+
+    this.activeSyncPromise = syncWork().finally(() => {
+      this.activeSyncPromise = null;
+    });
+
+    return this.activeSyncPromise;
   }
 
   /**
    * Retries profile synchronization when connectivity is restored or tab regains visibility.
+   * Debounced to prevent rapid-fire redundant calls when multiple visibility/focus events fire.
    */
   async retryProfileSyncOnReconnect(): Promise<void> {
     const currentFbUser =
@@ -351,18 +357,33 @@ class AuthService {
         : (firebaseAuth as any)?.currentUser || null;
     if (!currentFbUser) return;
 
-    if (this.hasPendingProfileSync || (this.currentUser && this.currentUser.authType === 'cloud')) {
-      try {
-        await this.syncFirebaseUser(currentFbUser);
-        this.notify();
-      } catch (err) {
-        console.warn('[AuthService] Reconnection profile sync deferred:', err);
-      }
+    if (!this.hasPendingProfileSync) return;
+
+    // Concurrency guard: if a sync is currently in-flight, await it instead of launching duplicate
+    if (this.activeSyncPromise) {
+      await this.activeSyncPromise.catch(() => {});
+      return;
+    }
+
+    // Rate-limiting debounce: minimum 3000ms between reconnect retries
+    const now = Date.now();
+    if (now - this.lastReconnectSyncTimestamp < 3000) {
+      return;
+    }
+    this.lastReconnectSyncTimestamp = now;
+
+    try {
+      await this.syncFirebaseUser(currentFbUser);
+      this.notify();
+    } catch (err) {
+      console.warn('[AuthService] Reconnection profile sync deferred:', err);
     }
   }
 
   public registerReconnectionListeners(): void {
+    if (this.reconnectionListenersRegistered) return;
     if (typeof window !== 'undefined') {
+      this.reconnectionListenersRegistered = true;
       window.addEventListener('online', () => {
         this.retryProfileSyncOnReconnect();
       });

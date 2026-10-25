@@ -18,6 +18,7 @@
 import assert from 'assert';
 import { FirestoreService, UserProfileResult } from '../src/services/firestoreService';
 import { auth } from '../src/services/auth';
+import { classifyConnectionError, reconnectNetwork } from '../src/services/firebase';
 import { User } from '../src/types';
 
 // In-memory mock storage polyfill
@@ -466,6 +467,48 @@ async function runProfileSafetyTests() {
     } finally {
       firestoreService.getUserProfileWithStatus = origGetProfile;
       firestoreService.saveUserProfile = origSaveProfile;
+    }
+  });
+
+  // --- Test 9: Persistence Contention ('failed-precondition') classification ---
+  await test('9. classifyConnectionError catches failed-precondition specifically from multi-tab contention', async () => {
+    const multiTabError = new Error('Multiple tabs open, persistence can only be enabled in one tab at a time.');
+    (multiTabError as any).code = 'failed-precondition';
+
+    const classification = classifyConnectionError(multiTabError);
+    assert.strictEqual(classification, 'failed_precondition');
+
+    // Also handles raw error codes without specific message strings
+    const rawPrecondition = { code: 'failed-precondition' };
+    assert.strictEqual(classifyConnectionError(rawPrecondition), 'failed_precondition');
+  });
+
+  // --- Test 10: Explicit distinction between permanent offline mode and transient connection drops ---
+  await test('10. Distinguishes permanent offline mode from transient connection drops on unavailable code', async () => {
+    const unavailableErr = new Error('Failed to get document from server because the client is offline.');
+    (unavailableErr as any).code = 'unavailable';
+
+    const origDesc = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    try {
+      Object.defineProperty(globalThis, 'navigator', {
+        value: { onLine: false },
+        configurable: true,
+        writable: true,
+      });
+      const offlineClassification = classifyConnectionError(unavailableErr);
+      assert.strictEqual(offlineClassification, 'permanent_offline');
+
+      Object.defineProperty(globalThis, 'navigator', {
+        value: { onLine: true },
+        configurable: true,
+        writable: true,
+      });
+      const onlineClassification = classifyConnectionError(unavailableErr);
+      assert.strictEqual(onlineClassification, 'transient_drop');
+    } finally {
+      if (origDesc) {
+        Object.defineProperty(globalThis, 'navigator', origDesc);
+      }
     }
   });
 

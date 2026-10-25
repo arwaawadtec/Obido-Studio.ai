@@ -3,6 +3,7 @@ import {
   doc,
   getDoc,
   getDocFromCache,
+  getDocFromServer,
   getDocs,
   setDoc,
   deleteDoc,
@@ -10,7 +11,18 @@ import {
   where,
   orderBy,
 } from 'firebase/firestore';
-import { db, isFirebaseAvailable, handleFirestoreError, isOfflineError, OperationType } from './firebase';
+import {
+  db,
+  isFirebaseAvailable,
+  handleFirestoreError,
+  isOfflineError,
+  classifyConnectionError,
+  reconnectNetwork,
+  getConnectionStatus,
+  getPersistenceMode,
+  OperationType,
+  ConnectionClassification,
+} from './firebase';
 import { Project, User, Asset } from '../types';
 
 export type ProfileReadStatus = 'found' | 'not_found' | 'unavailable';
@@ -99,38 +111,107 @@ export class FirestoreService {
     const path = `users/${userId}`;
     const docRef = doc(db, 'users', userId);
 
-    // If client is online in browser, permit a brief bounded retry for initial connection handshake
-    const isOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
-    const maxAttempts = isOnline ? 3 : 1;
-    const retryDelays = [400, 1000];
+    const isBrowserOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
+
+    // --- 1. Permanent Offline Mode ---
+    // If the browser/device is confirmed offline, service strictly from cache without network attempts
+    if (!isBrowserOnline) {
+      try {
+        const cacheSnap = await getDocFromCache(docRef);
+        if (cacheSnap.exists()) {
+          return {
+            status: 'found',
+            user: cacheSnap.data() as User,
+            source: 'cache',
+            reason: 'permanent_offline_served_from_cache',
+          };
+        }
+      } catch {}
+      // In permanent offline mode without cached document, return unavailable cleanly without warnings
+      return {
+        status: 'unavailable',
+        reason: 'permanent_offline',
+      };
+    }
+
+    // --- 2. Online Mode with Explicit Persistence Retry Strategy ---
+    const maxAttempts = 3;
+    const retryDelays = [300, 800];
     let lastOfflineError: unknown = null;
+    let hadPersistenceContention = false;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const snapshot = await getDoc(docRef);
+        // Query server directly to distinguish non-existent profile ('not_found')
+        // from transient network drops
+        const snapshot = await getDocFromServer(docRef);
         if (!snapshot.exists()) {
           return { status: 'not_found' };
         }
-        const isFromCache = !!(snapshot.metadata && snapshot.metadata.fromCache);
         return {
           status: 'found',
           user: snapshot.data() as User,
-          source: isFromCache ? 'cache' : 'server',
+          source: 'server',
         };
-      } catch (error) {
-        if (isOfflineError(error)) {
-          lastOfflineError = error;
-          // If online and attempts remain, retry with bounded exponential backoff
+      } catch (error: any) {
+        const classification = classifyConnectionError(error);
+
+        // Case A: 'failed-precondition' (e.g. multi-tab lock / persistence contention)
+        if (classification === 'failed_precondition') {
+          hadPersistenceContention = true;
+          // Attempt immediate read from cache under multi-tab contention
+          try {
+            const cacheSnap = await getDocFromCache(docRef);
+            if (cacheSnap.exists()) {
+              return {
+                status: 'found',
+                user: cacheSnap.data() as User,
+                source: 'cache',
+                reason: 'failed_precondition_cache_fallback',
+              };
+            }
+          } catch {}
+
+          // Attempt normal getDoc which handles local lock handoff
+          try {
+            const docSnap = await getDoc(docRef);
+            if (docSnap.exists()) {
+              return {
+                status: 'found',
+                user: docSnap.data() as User,
+                source: docSnap.metadata.fromCache ? 'cache' : 'server',
+              };
+            }
+          } catch {}
+
           if (attempt < maxAttempts) {
-            const delay = retryDelays[attempt - 1] || 1000;
+            await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt - 1] || 500));
+            continue;
+          }
+
+          console.warn(`[FirestoreService] Multi-tab persistence contention ('failed-precondition') for ${path}`);
+          return {
+            status: 'unavailable',
+            reason: 'failed_precondition',
+            error,
+          };
+        }
+
+        // Case B: 'transient_drop' (temporary network drop, handshake latency, 'unavailable')
+        if (classification === 'transient_drop') {
+          lastOfflineError = error;
+          if (attempt < maxAttempts) {
+            // Re-assert network transport on transient drops
+            await reconnectNetwork().catch(() => {});
+            const delay = retryDelays[attempt - 1] || 800;
             await new Promise((resolve) => setTimeout(resolve, delay));
             continue;
           }
           break;
         }
 
-        // Non-offline errors (e.g. permission-denied, unauthenticated, etc.)
-        const errorCode = (error as any)?.code || (error instanceof Error ? error.message : String(error));
+        // Case C: 'permission_denied' or permanent configuration error
+        const errorCode = error?.code || (error instanceof Error ? error.message : String(error));
         console.warn(`[FirestoreService] Profile read unresolved for ${path}: ${errorCode}`);
         return {
           status: 'unavailable',
@@ -140,7 +221,7 @@ export class FirestoreService {
       }
     }
 
-    // Attempt to retrieve from Firestore local cache if available
+    // Fallback: Check if local cache has the profile before declaring unavailable
     try {
       const cacheSnap = await getDocFromCache(docRef);
       if (cacheSnap.exists()) {
@@ -148,16 +229,16 @@ export class FirestoreService {
           status: 'found',
           user: cacheSnap.data() as User,
           source: 'cache',
+          reason: 'transient_drop_served_from_cache',
         };
       }
-    } catch {
-      // getDocFromCache failed or cache unavailable in environment
-    }
+    } catch {}
 
-    console.warn(`[FirestoreService] Client is offline; deferred profile read for ${path}`);
+    // Clean diagnostic log specifically distinguishing transient drop
+    console.warn(`[FirestoreService] Transient connection drop for ${path}; read deferred until network re-established.`);
     return {
       status: 'unavailable',
-      reason: 'offline',
+      reason: hadPersistenceContention ? 'failed_precondition' : 'transient_drop',
       error: lastOfflineError,
     };
   }

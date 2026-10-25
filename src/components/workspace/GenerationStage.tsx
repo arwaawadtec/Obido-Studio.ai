@@ -134,7 +134,8 @@ export const GenerationStage: React.FC<GenerationStageProps> = ({
     }
 
     setWarningMessage(null);
-    const isSimulated = provider !== 'gemini_omni';
+    // All video generation is currently local workflow simulation
+    const isSimulated = true;
 
     const newJob = storage.addGenerationJob(
       project.id,
@@ -572,9 +573,9 @@ export const GenerationStage: React.FC<GenerationStageProps> = ({
                       onChange={(e) => setProvider(e.target.value as any)}
                       className="w-full text-xs p-2.5 rounded-lg border border-[#E3E6EF] focus:border-[#635BFF] outline-hidden bg-white font-medium"
                     >
-                      <option value="gemini_omni">Gemini Omni Flash (Official / Connected)</option>
-                      <option value="runway_gen3">Runway Gen-3 Alpha (Simulated Demo)</option>
-                      <option value="luma_dream">Luma Dream Machine Ray 2 (Simulated Demo)</option>
+                      <option value="gemini_omni">Gemini Omni Flash 1.1 (Workflow Preview / Simulation)</option>
+                      <option value="runway_gen3">Runway Gen-3 Alpha (Simulated Prototype)</option>
+                      <option value="luma_dream">Luma Dream Machine Ray 2 (Simulated Prototype)</option>
                       <option value="local_demo">Local Sandbox Prototype (Simulated)</option>
                     </select>
                   </div>
@@ -632,28 +633,14 @@ export const GenerationStage: React.FC<GenerationStageProps> = ({
                 </div>
 
                 {/* Provider Reality Indicator Banner */}
-                <div
-                  className={`p-3 rounded-lg flex items-start gap-2.5 text-xs ${
-                    provider === 'gemini_omni'
-                      ? 'bg-[#635BFF]/5 border border-[#635BFF]/20 text-[#11152B]'
-                      : 'bg-amber-50/70 border border-amber-200/80 text-amber-900'
-                  }`}
-                >
-                  <Info
-                    className={`w-4 h-4 shrink-0 mt-0.5 ${
-                      provider === 'gemini_omni' ? 'text-[#635BFF]' : 'text-amber-600'
-                    }`}
-                  />
+                <div className="p-3 rounded-lg flex items-start gap-2.5 text-xs bg-amber-50/70 border border-amber-200/80 text-amber-900">
+                  <Info className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
                   <div className="space-y-0.5">
                     <div className="font-semibold">
-                      {provider === 'gemini_omni'
-                        ? 'Google Gemini Omni Flash 1.1 Model'
-                        : 'Simulated Sandbox Prototype Provider'}
+                      Production Workflow Prototype (Simulation Mode)
                     </div>
                     <p className="text-[11px] leading-relaxed text-[#62677A]">
-                      {provider === 'gemini_omni'
-                        ? 'Production execution using configured Cloud project and model endpoints with verifiable asset generation.'
-                        : 'Runs locally with realistic temporal progress simulation and mock assets to test production workflow without consuming paid external API credits.'}
+                      Connected Google Gemini API powers production text generation (scriptwriting, storyboard scene breakdown, and prompt enhancement). Video rendering operates in local simulation mode to validate shot duration, framing parameters, and asset take workflows without external GPU provider dependencies.
                     </p>
                   </div>
                 </div>

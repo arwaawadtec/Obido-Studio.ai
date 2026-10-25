@@ -9,7 +9,10 @@ import {
   setLogLevel,
   persistentLocalCache,
   persistentMultipleTabManager,
+  persistentSingleTabManager,
   memoryLocalCache,
+  enableNetwork,
+  disableNetwork,
 } from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
@@ -22,6 +25,16 @@ export enum OperationType {
   GET = 'get',
   WRITE = 'write',
 }
+
+export type PersistenceMode = 'multi_tab' | 'single_tab' | 'memory' | 'unconfigured';
+
+export type ConnectionClassification =
+  | 'connected'
+  | 'transient_drop'
+  | 'permanent_offline'
+  | 'failed_precondition'
+  | 'permission_denied'
+  | 'unknown';
 
 export interface FirestoreErrorInfo {
   error: string;
@@ -45,35 +58,101 @@ let dbInstance: Firestore | null = null;
 let authInstance: Auth | null = null;
 let storageInstance: FirebaseStorage | null = null;
 let isConfigured = false;
+let activePersistenceMode: PersistenceMode = 'unconfigured';
+let lastKnownConnectionState: ConnectionClassification = 'connected';
+
+function callInitializeFirestore(targetApp: FirebaseApp, settings: any, databaseId?: string): Firestore {
+  return databaseId ? initializeFirestore(targetApp, settings, databaseId) : initializeFirestore(targetApp, settings);
+}
+
+function callGetFirestore(targetApp: FirebaseApp, databaseId?: string): Firestore {
+  return databaseId ? getFirestore(targetApp, databaseId) : getFirestore(targetApp);
+}
+
+/**
+ * Robustly initializes Firestore with an explicit persistence retry strategy:
+ * 1. Attempts multi-tab persistent cache (`persistentMultipleTabManager`).
+ * 2. Catches 'failed-precondition' (e.g. storage contention) or 'unavailable' and falls back to single-tab.
+ * 3. Catches remaining failures and falls back to in-memory cache.
+ */
+function initFirestoreInstance(targetApp: FirebaseApp, databaseId?: string): { db: Firestore; mode: PersistenceMode } {
+  const isBrowser = typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined';
+  if (!isBrowser) {
+    try {
+      const db = callInitializeFirestore(targetApp, { localCache: memoryLocalCache() }, databaseId);
+      return { db, mode: 'memory' };
+    } catch {
+      return { db: callGetFirestore(targetApp, databaseId), mode: 'memory' };
+    }
+  }
+
+  // Attempt 1: Multi-tab persistence
+  try {
+    const cache = persistentLocalCache({ tabManager: persistentMultipleTabManager() });
+    const db = callInitializeFirestore(
+      targetApp,
+      {
+        experimentalForceLongPolling: true,
+        localCache: cache,
+      },
+      databaseId
+    );
+    return { db, mode: 'multi_tab' };
+  } catch (err: any) {
+    const code = err?.code || '';
+    const msg = err instanceof Error ? err.message : String(err);
+
+    // If initializeFirestore already ran, retrieve existing instance
+    if (msg.includes('already been started') || msg.includes('has already been initialized')) {
+      return { db: callGetFirestore(targetApp, databaseId), mode: 'multi_tab' };
+    }
+
+    if (code === 'failed-precondition' || msg.includes('failed-precondition') || msg.includes('Multiple tabs open')) {
+      console.warn('[Firebase] Multi-tab persistence failed-precondition, falling back to single-tab cache.');
+      try {
+        const singleCache = persistentLocalCache({ tabManager: persistentSingleTabManager({}) });
+        const db = callInitializeFirestore(
+          targetApp,
+          { experimentalForceLongPolling: true, localCache: singleCache },
+          databaseId
+        );
+        return { db, mode: 'single_tab' };
+      } catch (innerErr) {
+        console.warn('[Firebase] Single-tab fallback also failed, falling back to memory cache:', innerErr);
+        try {
+          const db = callInitializeFirestore(
+            targetApp,
+            { experimentalForceLongPolling: true, localCache: memoryLocalCache() },
+            databaseId
+          );
+          return { db, mode: 'memory' };
+        } catch {
+          return { db: callGetFirestore(targetApp, databaseId), mode: 'memory' };
+        }
+      }
+    }
+
+    // Attempt memory fallback for other persistence initialization errors
+    try {
+      const db = callInitializeFirestore(
+        targetApp,
+        { experimentalForceLongPolling: true, localCache: memoryLocalCache() },
+        databaseId
+      );
+      return { db, mode: 'memory' };
+    } catch {
+      return { db: callGetFirestore(targetApp, databaseId), mode: 'memory' };
+    }
+  }
+}
 
 try {
   if (firebaseConfig && firebaseConfig.apiKey && firebaseConfig.projectId && firebaseConfig.projectId !== 'remixed-project-id') {
     app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
     
-    // Configure cache and transport for sandboxed iframe/browser environments
-    const isBrowser = typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined';
-    let localCache: any;
-    try {
-      localCache = isBrowser
-        ? persistentLocalCache({ tabManager: persistentMultipleTabManager() })
-        : memoryLocalCache();
-    } catch {
-      localCache = memoryLocalCache();
-    }
-
-    try {
-      dbInstance = initializeFirestore(
-        app,
-        {
-          experimentalForceLongPolling: true,
-          localCache,
-        },
-        (firebaseConfig as any).firestoreDatabaseId
-      );
-    } catch {
-      // Fallback if initializeFirestore was already called for this FirebaseApp instance
-      dbInstance = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
-    }
+    const dbResult = initFirestoreInstance(app, (firebaseConfig as any).firestoreDatabaseId);
+    dbInstance = dbResult.db;
+    activePersistenceMode = dbResult.mode;
 
     try {
       setLogLevel('silent');
@@ -154,4 +233,81 @@ export async function testConnection(): Promise<boolean> {
     // Permission denied on dummy doc is expected because test/connection is protected by default deny rules
     return true;
   }
+}
+
+/**
+ * Specifically classifies Firestore operation errors into actionable domain categories.
+ * Distinguishes between permanent offline mode (device disconnected), transient connection
+ * drops (network is active but long-polling/websocket connection dropped), and persistence
+ * contention ('failed-precondition').
+ */
+export function classifyConnectionError(error: unknown): ConnectionClassification {
+  if (!error) return 'connected';
+  const isBrowserOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
+  const code = (error as any)?.code || '';
+  const msg = error instanceof Error ? error.message : String(error);
+
+  if (
+    code === 'failed-precondition' ||
+    msg.includes('failed-precondition') ||
+    msg.includes('Multiple tabs open') ||
+    msg.includes('persistence can only be enabled in one tab')
+  ) {
+    return 'failed_precondition';
+  }
+
+  if (
+    code === 'permission-denied' ||
+    msg.includes('permission-denied') ||
+    msg.includes('Missing or insufficient permissions')
+  ) {
+    return 'permission_denied';
+  }
+
+  if (
+    code === 'unavailable' ||
+    isOfflineError(error)
+  ) {
+    return isBrowserOnline ? 'transient_drop' : 'permanent_offline';
+  }
+
+  return 'unknown';
+}
+
+/**
+ * Re-enables network synchronization for the Firestore instance with bounded retries.
+ * Used to recover from transient connection drops without restarting the entire app.
+ */
+export async function reconnectNetwork(options?: { force?: boolean }): Promise<boolean> {
+  if (!dbInstance) return false;
+  const isBrowserOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
+
+  // If in permanent offline mode (no internet), do not trigger pointless network calls
+  if (!isBrowserOnline && !options?.force) {
+    lastKnownConnectionState = 'permanent_offline';
+    return false;
+  }
+
+  try {
+    await enableNetwork(dbInstance);
+    lastKnownConnectionState = 'connected';
+    return true;
+  } catch (err: any) {
+    const classification = classifyConnectionError(err);
+    lastKnownConnectionState = classification;
+    if (classification === 'failed_precondition') {
+      console.warn('[Firebase] Persistence contention during network enable:', err?.message || err);
+    }
+    return false;
+  }
+}
+
+export function getPersistenceMode(): PersistenceMode {
+  return activePersistenceMode;
+}
+
+export function getConnectionStatus(): ConnectionClassification {
+  const isBrowserOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
+  if (!isBrowserOnline) return 'permanent_offline';
+  return lastKnownConnectionState;
 }

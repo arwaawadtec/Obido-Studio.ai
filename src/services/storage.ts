@@ -1,5 +1,6 @@
 import { Project, VideoTemplate, WorkflowStage, Scene, Shot, PromptVersion, Asset, GenerationJob, TimelineClip } from '../types';
 import { firestoreService } from './firestoreService';
+import { classifyConnectionError, reconnectNetwork } from './firebase';
 import {
   migrateProjectToShots,
   calculateSceneDuration,
@@ -9,6 +10,7 @@ import {
   getPromptsForShot,
   getActivePromptForShot,
 } from './shotMigration';
+import { domainService } from './domainService';
 
 const STORAGE_KEY = 'obido_studio_projects_v1';
 const ACTIVE_PROJECT_KEY = 'obido_studio_active_project_id';
@@ -621,6 +623,18 @@ class StorageService {
         this.persist();
         return cloudProjects;
       } catch (err) {
+        const classification = classifyConnectionError(err);
+        if (classification === 'permanent_offline') {
+          // Device is offline; cleanly service from local cache
+          return this.getProjects(userId);
+        } else if (classification === 'failed_precondition') {
+          console.warn('[StorageService] Multi-tab persistence contention (failed-precondition); serving projects from local cache.');
+          return this.getProjects(userId);
+        } else if (classification === 'transient_drop') {
+          console.warn('[StorageService] Transient Firestore connection drop; reading projects from local cache while reconnecting.');
+          reconnectNetwork().catch(() => {});
+          return this.getProjects(userId);
+        }
         console.warn('[StorageService] Firestore query error, falling back to local cache:', err);
         return this.getProjects(userId);
       }
@@ -905,15 +919,13 @@ class StorageService {
     const project = this.getProject(projectId);
     if (!project) return;
 
-    const filteredScenes = project.scenes.filter((sc) => sc.id !== sceneId);
-    // Re-index scene numbers cleanly
-    const reindexedScenes = filteredScenes.map((sc, i) => ({ ...sc, sceneNumber: i + 1 }));
-    // Cascade delete child shots
-    const filteredShots = (project.shots || []).filter((sh) => sh.sceneId !== sceneId);
-
+    const updated = domainService.cascadeDeleteScene(project, sceneId);
     this.updateProject(projectId, {
-      scenes: reindexedScenes,
-      shots: filteredShots,
+      scenes: updated.scenes,
+      shots: updated.shots,
+      prompts: updated.prompts,
+      activePromptVersion: updated.activePromptVersion,
+      timeline: updated.timeline,
     });
   }
 
@@ -921,12 +933,8 @@ class StorageService {
     const project = this.getProject(projectId);
     if (!project) return;
 
-    const scenes = [...project.scenes];
-    const [moved] = scenes.splice(sourceIndex, 1);
-    scenes.splice(destinationIndex, 0, moved);
-
-    const reindexed = scenes.map((sc, i) => ({ ...sc, sceneNumber: i + 1 }));
-    this.updateProject(projectId, { scenes: reindexed });
+    const updated = domainService.reorderScenes(project, sourceIndex, destinationIndex);
+    this.updateProject(projectId, { scenes: updated.scenes });
   }
 
   // Shot management
@@ -1032,39 +1040,13 @@ class StorageService {
     const existingShot = (project.shots || []).find((s) => s.id === shotId);
     if (!existingShot) return false;
 
-    const sceneId = existingShot.sceneId;
-    const scene = project.scenes.find((s) => s.id === sceneId);
-
-    // Filter out deleted shot
-    const filteredShots = (project.shots || []).filter((s) => s.id !== shotId);
-    // Reindex shot numbers within this scene
-    const reindexedShots = filteredShots.map((s) => {
-      if (s.sceneId === sceneId) {
-        const indexInScene = filteredShots.filter((item) => item.sceneId === sceneId).indexOf(s);
-        return { ...s, shotNumber: indexInScene + 1 };
-      }
-      return s;
-    });
-
-    let updatedScenes = project.scenes;
-    if (scene) {
-      const updatedShotIds = (scene.shotIds || []).filter((id) => id !== shotId);
-      const totalDurationSeconds = calculateSceneDuration(scene, reindexedShots);
-      updatedScenes = project.scenes.map((s) =>
-        s.id === sceneId
-          ? {
-              ...s,
-              shotIds: updatedShotIds,
-              totalDurationSeconds,
-              estimatedDurationSeconds: totalDurationSeconds,
-            }
-          : s
-      );
-    }
-
+    const updated = domainService.cascadeDeleteShot(project, shotId);
     this.updateProject(projectId, {
-      shots: reindexedShots,
-      scenes: updatedScenes,
+      scenes: updated.scenes,
+      shots: updated.shots,
+      prompts: updated.prompts,
+      activePromptVersion: updated.activePromptVersion,
+      timeline: updated.timeline,
     });
 
     return true;
@@ -1074,39 +1056,10 @@ class StorageService {
     const project = this.getProject(projectId);
     if (!project) return false;
 
-    const scene = project.scenes.find((s) => s.id === sceneId);
-    if (!scene) return false;
-
-    const sceneShots = getShotsForScene(project, sceneId);
-    if (
-      sourceIndex < 0 ||
-      sourceIndex >= sceneShots.length ||
-      destinationIndex < 0 ||
-      destinationIndex >= sceneShots.length
-    ) {
-      return false;
-    }
-
-    const reordered = [...sceneShots];
-    const [moved] = reordered.splice(sourceIndex, 1);
-    reordered.splice(destinationIndex, 0, moved);
-
-    // Update shotNumbers and gather new shotIds
-    const newShotIds = reordered.map((s, idx) => {
-      s.shotNumber = idx + 1;
-      return s.id;
-    });
-
-    const otherShots = (project.shots || []).filter((s) => s.sceneId !== sceneId);
-    const updatedShots = [...otherShots, ...reordered];
-
-    const updatedScenes = project.scenes.map((s) =>
-      s.id === sceneId ? { ...s, shotIds: newShotIds } : s
-    );
-
+    const updated = domainService.reorderShotsInScene(project, sceneId, sourceIndex, destinationIndex);
     this.updateProject(projectId, {
-      shots: updatedShots,
-      scenes: updatedScenes,
+      shots: updated.shots,
+      scenes: updated.scenes,
     });
 
     return true;
@@ -1139,109 +1092,29 @@ class StorageService {
     const project = this.getProject(projectId);
     if (!project) return undefined;
 
-    const shot = (project.shots || []).find((s) => s.id === shotId);
-    if (!shot) return undefined;
-
-    // For shot 1, if it has no versions yet, it can adopt legacy scene prompt versions
-    // For subsequent shots (take 2, 3...), they start with their own clean prompt history
-    let existingVersions: PromptVersion[] = [];
-    if (project.prompts && project.prompts[shotId] && project.prompts[shotId].length > 0) {
-      existingVersions = project.prompts[shotId];
-    } else if (shot.shotNumber === 1 && project.prompts && project.prompts[shot.sceneId]) {
-      existingVersions = project.prompts[shot.sceneId];
+    try {
+      const { project: updated, version } = domainService.createShotPromptVersion(project, shotId, promptData);
+      this.updateProject(projectId, {
+        prompts: updated.prompts,
+        activePromptVersion: updated.activePromptVersion,
+        shots: updated.shots,
+      });
+      return version;
+    } catch (err) {
+      console.error('[StorageService] Failed to save shot prompt via domainService:', err);
+      return undefined;
     }
-
-    const newVersionNumber = existingVersions.length + 1;
-    const versionId = `pv_${shotId}_v${newVersionNumber}_${Date.now().toString(36)}`;
-
-    const newVersion: PromptVersion = {
-      id: versionId,
-      sceneId: shot.sceneId,
-      shotId: shot.id,
-      versionNumber: newVersionNumber,
-      createdAt: new Date().toISOString(),
-      visualPrompt: promptData.visualPrompt || shot.visualIntent || '',
-      motionInstructions: promptData.motionInstructions || 'Smooth cinematic camera movement',
-      cameraDirection: promptData.cameraDirection || shot.framing || 'medium',
-      negativePrompt:
-        promptData.negativePrompt ||
-        'blurry, flickering, low-res, text artifacts, watermarks, floating limbs, cartoon',
-      audioInstructions: promptData.audioInstructions || shot.dialogueSnippet || '',
-      targetProvider: promptData.targetProvider || 'gemini_omni',
-      targetModel:
-        promptData.targetModel ||
-        (promptData.targetProvider === 'gemini_omni' ? 'gemini-omni-1.1-flash' : 'external-v1'),
-    };
-
-    const updatedPrompts = {
-      ...(project.prompts || {}),
-      [shot.id]: [newVersion, ...existingVersions.filter((v) => v.id !== versionId)],
-      // Backward compatibility: only sync primary shot (shot 1) to scene prompt list
-      ...(shot.shotNumber === 1
-        ? {
-            [shot.sceneId]: [
-              newVersion,
-              ...(project.prompts?.[shot.sceneId] || []).filter((v) => v.id !== versionId),
-            ],
-          }
-        : {}),
-    };
-
-    const updatedActivePromptVersion = {
-      ...(project.activePromptVersion || {}),
-      [shot.id]: versionId,
-      ...(shot.shotNumber === 1 ? { [shot.sceneId]: versionId } : {}),
-    };
-
-    // Update shot status and pointer
-    const updatedShots = (project.shots || []).map((s) =>
-      s.id === shotId
-        ? {
-            ...s,
-            activePromptId: versionId,
-            status: s.status === 'draft' ? ('prompted' as const) : s.status,
-            updatedAt: new Date().toISOString(),
-          }
-        : s
-    );
-
-    this.updateProject(projectId, {
-      prompts: updatedPrompts,
-      activePromptVersion: updatedActivePromptVersion,
-      shots: updatedShots,
-    });
-
-    return newVersion;
   }
 
   setActiveShotPromptVersion(projectId: string, shotId: string, versionId: string): boolean {
     const project = this.getProject(projectId);
     if (!project) return false;
 
-    const shot = (project.shots || []).find((s) => s.id === shotId);
-    if (!shot) return false;
-
-    const updatedActivePromptVersion = {
-      ...(project.activePromptVersion || {}),
-      [shotId]: versionId,
-      [shot.sceneId]: versionId,
-    };
-
-    const updatedShots = (project.shots || []).map((s) =>
-      s.id === shotId
-        ? {
-            ...s,
-            activePromptId: versionId,
-            updatedAt: new Date().toISOString(),
-          }
-        : s
-    );
-
+    const updated = domainService.activateShotPromptVersion(project, shotId, versionId);
     this.updateProject(projectId, {
-      activePromptVersion: updatedActivePromptVersion,
-      shots: updatedShots,
+      activePromptVersion: updated.activePromptVersion,
+      shots: updated.shots,
     });
-
     return true;
   }
 
@@ -1268,33 +1141,25 @@ class StorageService {
     deduplicate: boolean = true
   ): GenerationJob {
     const project = this.getProject(projectId);
-
-    // Deduplication: prevent duplicate concurrent queued/processing jobs for the same shot
-    if (deduplicate && project) {
-      const existing = (project.generationJobs || []).find(
-        (j) =>
-          (j.status === 'queued' || j.status === 'processing') &&
-          j.taskType === job.taskType &&
-          ((job.shotId && j.shotId === job.shotId) ||
-            (!job.shotId && job.sceneId && j.sceneId === job.sceneId))
-      );
-      if (existing) {
-        return existing;
-      }
+    if (!project) {
+      return {
+        ...job,
+        id: 'job_' + Math.random().toString(36).substring(2, 9),
+        queuedAt: new Date().toISOString(),
+      };
     }
 
-    const newJob: GenerationJob = {
-      ...job,
-      id: 'job_' + Math.random().toString(36).substring(2, 9),
-      queuedAt: new Date().toISOString(),
-    };
+    const { project: updated, job: resultJob } = domainService.createDeduplicatedJob(
+      project,
+      job,
+      deduplicate
+    );
 
-    if (project) {
-      this.updateProject(projectId, {
-        generationJobs: [newJob, ...project.generationJobs],
-      });
-    }
-    return newJob;
+    this.updateProject(projectId, {
+      generationJobs: updated.generationJobs,
+    });
+
+    return resultJob;
   }
 
   updateGenerationJob(projectId: string, jobId: string, updates: Partial<GenerationJob>) {

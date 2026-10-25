@@ -311,8 +311,11 @@ export function getPromptsForShot(
     return project.prompts[shotId];
   }
 
-  // 2. Fallback to scene-level prompts for backward compatibility
-  if (sceneId && project.prompts[sceneId] && project.prompts[sceneId].length > 0) {
+  // 2. Fallback to scene-level prompts only for primary take or legacy scene without shots
+  const shot = (project.shots || []).find((s) => s.id === shotId);
+  const isPrimary = !shot || shot.shotNumber === 1;
+
+  if (isPrimary && sceneId && project.prompts[sceneId] && project.prompts[sceneId].length > 0) {
     return project.prompts[sceneId].map((pv) => ({
       ...pv,
       shotId: pv.shotId || shotId,
