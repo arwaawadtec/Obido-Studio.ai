@@ -311,3 +311,46 @@ export function getConnectionStatus(): ConnectionClassification {
   if (!isBrowserOnline) return 'permanent_offline';
   return lastKnownConnectionState;
 }
+
+/**
+ * Executes a Firestore asynchronous operation with bounded exponential backoff
+ * and explicit handling of 'failed-precondition' and 'unavailable' error codes.
+ */
+export async function executeWithFirestoreRetry<T>(
+  operation: () => Promise<T>,
+  options: {
+    maxAttempts?: number;
+    initialDelayMs?: number;
+    maxDelayMs?: number;
+    backoffFactor?: number;
+    operationName?: string;
+  } = {}
+): Promise<T> {
+  const maxAttempts = options.maxAttempts ?? 3;
+  let delay = options.initialDelayMs ?? 400;
+  const maxDelay = options.maxDelayMs ?? 2500;
+  const factor = options.backoffFactor ?? 2;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await operation();
+    } catch (err: any) {
+      const classification = classifyConnectionError(err);
+      if (classification === 'permanent_offline') {
+        throw err;
+      }
+      if (classification === 'failed_precondition' || classification === 'transient_drop') {
+        if (attempt < maxAttempts) {
+          if (classification === 'transient_drop') {
+            await reconnectNetwork().catch(() => {});
+          }
+          await new Promise((res) => setTimeout(res, delay));
+          delay = Math.min(delay * factor, maxDelay);
+          continue;
+        }
+      }
+      throw err;
+    }
+  }
+  throw new Error(`[Firestore] Operation ${options.operationName || 'unknown'} exhausted ${maxAttempts} retries.`);
+}

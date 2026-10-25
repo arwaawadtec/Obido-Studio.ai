@@ -20,6 +20,7 @@ import {
   reconnectNetwork,
   getConnectionStatus,
   getPersistenceMode,
+  executeWithFirestoreRetry,
   OperationType,
   ConnectionClassification,
 } from './firebase';
@@ -94,7 +95,10 @@ export class FirestoreService {
         sanitizedUser.avatar = user.avatar;
       }
       const cleanPayload = sanitizeFirestoreData(sanitizedUser);
-      await setDoc(doc(db, 'users', user.id), cleanPayload, { merge: true });
+      await executeWithFirestoreRetry(
+        () => setDoc(doc(db, 'users', user.id), cleanPayload, { merge: true }),
+        { operationName: `saveUserProfile(${user.id})` }
+      );
     } catch (error) {
       if (isOfflineError(error)) {
         console.warn(`[FirestoreService] Client is offline; deferred profile write for ${path}`);
@@ -113,45 +117,45 @@ export class FirestoreService {
 
     const isBrowserOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
 
-    // --- 1. Permanent Offline Mode ---
-    // If the browser/device is confirmed offline, service strictly from cache without network attempts
+    // --- 1. Immediate Cache Read ---
+    // In browser with persistence enabled, reading from cache takes <2ms and prevents network delay
+    try {
+      const cacheSnap = await getDocFromCache(docRef);
+      if (cacheSnap.exists()) {
+        return {
+          status: 'found',
+          user: cacheSnap.data() as User,
+          source: 'cache',
+          reason: 'cached_profile_instant_read',
+        };
+      }
+    } catch {}
+
+    // --- 2. Permanent Offline Mode ---
     if (!isBrowserOnline) {
-      try {
-        const cacheSnap = await getDocFromCache(docRef);
-        if (cacheSnap.exists()) {
-          return {
-            status: 'found',
-            user: cacheSnap.data() as User,
-            source: 'cache',
-            reason: 'permanent_offline_served_from_cache',
-          };
-        }
-      } catch {}
-      // In permanent offline mode without cached document, return unavailable cleanly without warnings
       return {
         status: 'unavailable',
         reason: 'permanent_offline',
       };
     }
 
-    // --- 2. Online Mode with Explicit Persistence Retry Strategy ---
+    // --- 3. Online Mode with Exponential Backoff Persistence Retry ---
     const maxAttempts = 3;
-    const retryDelays = [300, 800];
+    const retryDelays = [400, 1200];
     let lastOfflineError: unknown = null;
     let hadPersistenceContention = false;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        // Query server directly to distinguish non-existent profile ('not_found')
-        // from transient network drops
-        const snapshot = await getDocFromServer(docRef);
+        // getDoc allows connection handshake negotiation and serves directly
+        const snapshot = await getDoc(docRef);
         if (!snapshot.exists()) {
           return { status: 'not_found' };
         }
         return {
           status: 'found',
           user: snapshot.data() as User,
-          source: 'server',
+          source: snapshot.metadata?.fromCache ? 'cache' : 'server',
         };
       } catch (error: any) {
         const classification = classifyConnectionError(error);
@@ -172,24 +176,11 @@ export class FirestoreService {
             }
           } catch {}
 
-          // Attempt normal getDoc which handles local lock handoff
-          try {
-            const docSnap = await getDoc(docRef);
-            if (docSnap.exists()) {
-              return {
-                status: 'found',
-                user: docSnap.data() as User,
-                source: docSnap.metadata.fromCache ? 'cache' : 'server',
-              };
-            }
-          } catch {}
-
           if (attempt < maxAttempts) {
             await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt - 1] || 500));
             continue;
           }
 
-          console.warn(`[FirestoreService] Multi-tab persistence contention ('failed-precondition') for ${path}`);
           return {
             status: 'unavailable',
             reason: 'failed_precondition',
@@ -201,7 +192,6 @@ export class FirestoreService {
         if (classification === 'transient_drop') {
           lastOfflineError = error;
           if (attempt < maxAttempts) {
-            // Re-assert network transport on transient drops
             await reconnectNetwork().catch(() => {});
             const delay = retryDelays[attempt - 1] || 800;
             await new Promise((resolve) => setTimeout(resolve, delay));
@@ -212,7 +202,6 @@ export class FirestoreService {
 
         // Case C: 'permission_denied' or permanent configuration error
         const errorCode = error?.code || (error instanceof Error ? error.message : String(error));
-        console.warn(`[FirestoreService] Profile read unresolved for ${path}: ${errorCode}`);
         return {
           status: 'unavailable',
           reason: errorCode,
@@ -234,8 +223,6 @@ export class FirestoreService {
       }
     } catch {}
 
-    // Clean diagnostic log specifically distinguishing transient drop
-    console.warn(`[FirestoreService] Transient connection drop for ${path}; read deferred until network re-established.`);
     return {
       status: 'unavailable',
       reason: hadPersistenceContention ? 'failed_precondition' : 'transient_drop',
@@ -264,7 +251,10 @@ export class FirestoreService {
         isLocalOnly: false,
         updatedAt: new Date().toISOString(),
       });
-      await setDoc(doc(db, 'projects', project.id), payload, { merge: true });
+      await executeWithFirestoreRetry(
+        () => setDoc(doc(db, 'projects', project.id), payload, { merge: true }),
+        { operationName: `saveProject(${project.id})` }
+      );
     } catch (error) {
       if (isOfflineError(error)) {
         console.warn(`[FirestoreService] Client is offline; queued project write for ${path}`);
@@ -283,7 +273,10 @@ export class FirestoreService {
         collection(db, 'projects'),
         where('userId', '==', userId)
       );
-      const snapshot = await getDocs(q);
+      const snapshot = await executeWithFirestoreRetry(
+        () => getDocs(q),
+        { operationName: `getProjects(${userId})` }
+      );
       const projects: Project[] = [];
       snapshot.forEach((docSnap) => {
         projects.push(docSnap.data() as Project);
@@ -305,7 +298,10 @@ export class FirestoreService {
     if (!this.isAvailable() || !projectId) return null;
     const path = `projects/${projectId}`;
     try {
-      const snapshot = await getDoc(doc(db, 'projects', projectId));
+      const snapshot = await executeWithFirestoreRetry(
+        () => getDoc(doc(db, 'projects', projectId)),
+        { operationName: `getProject(${projectId})` }
+      );
       if (!snapshot.exists()) return null;
       const data = snapshot.data() as Project;
       // Server-side / rule boundary: enforce user ownership
@@ -334,7 +330,10 @@ export class FirestoreService {
           throw new Error('Access denied: Cannot delete a project owned by another user.');
         }
       }
-      await deleteDoc(doc(db, 'projects', projectId));
+      await executeWithFirestoreRetry(
+        () => deleteDoc(doc(db, 'projects', projectId)),
+        { operationName: `deleteProject(${projectId})` }
+      );
     } catch (error) {
       if (isOfflineError(error)) {
         console.warn(`[FirestoreService] Client is offline; deferred deleteProject for ${path}`);

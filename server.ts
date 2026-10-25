@@ -291,6 +291,230 @@ export function requireAuth(req: express.Request, res: express.Response, next: e
   }
 }
 
+export interface ContainmentValidationResult {
+  valid: boolean;
+  errors: string[];
+}
+
+export function validateProjectEntityContainment(
+  project: any,
+  verifiedUid: string
+): ContainmentValidationResult {
+  const errors: string[] = [];
+
+  if (!project || typeof project !== 'object') {
+    return { valid: false, errors: ['Project payload is missing or invalid.'] };
+  }
+
+  // 1. Project ownership check: verifiedUid must match project.userId
+  if (project.userId && project.userId !== verifiedUid) {
+    errors.push(
+      `Project ownership mismatch: project belongs to "${project.userId}", not authenticated user "${verifiedUid}".`
+    );
+  }
+
+  const projectId = project.id;
+  if (!projectId || typeof projectId !== 'string') {
+    errors.push('Project missing valid id.');
+  }
+
+  // Collect scene IDs
+  const sceneIds = new Set<string>();
+  if (Array.isArray(project.scenes)) {
+    for (const sc of project.scenes) {
+      if (!sc.id || typeof sc.id !== 'string') {
+        errors.push('Scene has missing or invalid id.');
+      } else {
+        if (sceneIds.has(sc.id)) {
+          errors.push(`Duplicate scene id detected: ${sc.id}`);
+        }
+        sceneIds.add(sc.id);
+      }
+    }
+  }
+
+  // Collect shot IDs & verify shot relationships
+  const shotIds = new Set<string>();
+  if (Array.isArray(project.shots)) {
+    for (const sh of project.shots) {
+      if (!sh.id || typeof sh.id !== 'string') {
+        errors.push('Shot has missing or invalid id.');
+      } else {
+        if (shotIds.has(sh.id)) {
+          errors.push(`Duplicate shot id detected: ${sh.id}`);
+        }
+        shotIds.add(sh.id);
+      }
+
+      // Check shot containment in project
+      if (sh.projectId && sh.projectId !== projectId) {
+        errors.push(`Shot ${sh.id} references foreign project ${sh.projectId} (expected ${projectId}).`);
+      }
+
+      // Check shot containment in parent scene
+      if (!sh.sceneId || !sceneIds.has(sh.sceneId)) {
+        errors.push(`Shot ${sh.id} references non-existent scene ${sh.sceneId}.`);
+      }
+    }
+  }
+
+  // Check scene.shotIds reference valid shots in this project
+  if (Array.isArray(project.scenes)) {
+    for (const sc of project.scenes) {
+      if (Array.isArray(sc.shotIds)) {
+        for (const sId of sc.shotIds) {
+          if (!shotIds.has(sId)) {
+            errors.push(`Scene ${sc.id} lists shotId ${sId} that does not exist in project shots.`);
+          }
+        }
+      }
+    }
+  }
+
+  // Check prompt versions containment
+  if (project.prompts && typeof project.prompts === 'object') {
+    for (const [key, versions] of Object.entries(project.prompts)) {
+      const isShot = shotIds.has(key);
+      const isScene = sceneIds.has(key);
+      if (!isShot && !isScene) {
+        errors.push(`Prompt history key ${key} references non-existent shot or scene.`);
+      }
+      if (Array.isArray(versions)) {
+        for (const pv of versions as any[]) {
+          if (pv.shotId && !shotIds.has(pv.shotId)) {
+            errors.push(`Prompt version ${pv.id} references non-existent shot ${pv.shotId}.`);
+          }
+          if (pv.sceneId && !sceneIds.has(pv.sceneId)) {
+            errors.push(`Prompt version ${pv.id} references non-existent scene ${pv.sceneId}.`);
+          }
+        }
+      }
+    }
+  }
+
+  // Check active prompt versions
+  if (project.activePromptVersion && typeof project.activePromptVersion === 'object') {
+    for (const [key, versionId] of Object.entries(project.activePromptVersion)) {
+      if (!shotIds.has(key) && !sceneIds.has(key)) {
+        errors.push(`Active prompt version pointer key ${key} is orphaned.`);
+      }
+    }
+  }
+
+  // Check assets containment
+  const assetIds = new Set<string>();
+  if (Array.isArray(project.assets)) {
+    for (const a of project.assets) {
+      if (!a.id || typeof a.id !== 'string') {
+        errors.push('Asset has missing or invalid id.');
+      } else {
+        assetIds.add(a.id);
+      }
+      if (a.projectId && a.projectId !== projectId) {
+        errors.push(`Asset ${a.id} references foreign project ${a.projectId}.`);
+      }
+      if (a.sceneId && !sceneIds.has(a.sceneId)) {
+        errors.push(`Asset ${a.id} references foreign/missing scene ${a.sceneId}.`);
+      }
+      if (a.shotId && !shotIds.has(a.shotId)) {
+        errors.push(`Asset ${a.id} references foreign/missing shot ${a.shotId}.`);
+      }
+    }
+  }
+
+  // Check shot.activeAssetId
+  if (Array.isArray(project.shots)) {
+    for (const sh of project.shots) {
+      if (sh.activeAssetId && !assetIds.has(sh.activeAssetId)) {
+        errors.push(`Shot ${sh.id} activeAssetId ${sh.activeAssetId} does not exist in project assets.`);
+      }
+    }
+  }
+
+  // Check generation jobs containment
+  if (Array.isArray(project.generationJobs)) {
+    for (const job of project.generationJobs) {
+      if (job.projectId && job.projectId !== projectId) {
+        errors.push(`Generation job ${job.id} references foreign project ${job.projectId}.`);
+      }
+      if (job.sceneId && !sceneIds.has(job.sceneId)) {
+        errors.push(`Generation job ${job.id} references non-existent scene ${job.sceneId}.`);
+      }
+      if (job.shotId && !shotIds.has(job.shotId)) {
+        errors.push(`Generation job ${job.id} references non-existent shot ${job.shotId}.`);
+      }
+    }
+  }
+
+  // Check timeline clips containment
+  if (project.timeline?.clips && Array.isArray(project.timeline.clips)) {
+    for (const clip of project.timeline.clips) {
+      if (clip.sceneId && !sceneIds.has(clip.sceneId)) {
+        errors.push(`Timeline clip ${clip.id} references non-existent scene ${clip.sceneId}.`);
+      }
+      if (clip.shotId && !shotIds.has(clip.shotId)) {
+        errors.push(`Timeline clip ${clip.id} references non-existent shot ${clip.shotId}.`);
+      }
+      if (clip.assetId && !assetIds.has(clip.assetId)) {
+        errors.push(`Timeline clip ${clip.id} references non-existent asset ${clip.assetId}.`);
+      }
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+// Project Entity Containment & Referential Integrity Verification Endpoint
+app.post('/api/project/validate-containment', requireAuth, async (req, res) => {
+  const verifiedUid = (req as any).user?.verifiedUid;
+  const project = req.body.project || req.body;
+
+  if (!project || typeof project !== 'object') {
+    return sendApiError(res, 400, {
+      code: 'INVALID_PAYLOAD',
+      message: 'Project payload is required for containment verification.',
+      stage: 'validation',
+      retryable: false,
+    });
+  }
+
+  // Cross-user authorization check
+  if (project.userId && project.userId !== verifiedUid) {
+    return sendApiError(res, 403, {
+      code: 'PROJECT_ACCESS_DENIED',
+      message: `Forbidden: Project belongs to user "${project.userId}", not authenticated user "${verifiedUid}".`,
+      field: 'userId',
+      stage: 'authorization',
+      retryable: false,
+    });
+  }
+
+  const containment = validateProjectEntityContainment(project, verifiedUid);
+  if (!containment.valid) {
+    return sendApiError(res, 400, {
+      code: 'INVALID_CONTAINMENT',
+      message: 'Referential integrity or entity containment violation: ' + containment.errors[0],
+      details: containment.errors.join('; '),
+      stage: 'validation',
+      retryable: false,
+    });
+  }
+
+  res.json({
+    success: true,
+    projectId: project.id,
+    verifiedUid,
+    sceneCount: Array.isArray(project.scenes) ? project.scenes.length : 0,
+    shotCount: Array.isArray(project.shots) ? project.shots.length : 0,
+    assetCount: Array.isArray(project.assets) ? project.assets.length : 0,
+    clipCount: Array.isArray(project.timeline?.clips) ? project.timeline.clips.length : 0,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // AI Script Generation Endpoint
 app.post('/api/ai/script', requireAuth, async (req, res) => {
   const requestedProviderId = req.body.providerId || 'gemini';
@@ -397,6 +621,20 @@ app.post('/api/ai/script', requireAuth, async (req, res) => {
 // AI Storyboard Generation Endpoint
 app.post('/api/ai/storyboard', requireAuth, async (req, res) => {
   try {
+    const verifiedUid = (req as any).user?.verifiedUid;
+    if (req.body.project) {
+      const containment = validateProjectEntityContainment(req.body.project, verifiedUid);
+      if (!containment.valid) {
+        return sendApiError(res, 400, {
+          code: 'INVALID_CONTAINMENT',
+          message: 'Project entity containment validation failed: ' + containment.errors[0],
+          details: containment.errors.join('; '),
+          stage: 'storyboard',
+          retryable: false,
+        });
+      }
+    }
+
     const provider = getAIProvider(req.body.providerId);
     if (!provider.isAvailable()) {
       return sendApiError(res, 503, {
@@ -425,6 +663,20 @@ app.post('/api/ai/storyboard', requireAuth, async (req, res) => {
 // AI Video Prompt Refiner Endpoint
 app.post('/api/ai/prompt-enhance', requireAuth, async (req, res) => {
   try {
+    const verifiedUid = (req as any).user?.verifiedUid;
+    if (req.body.project) {
+      const containment = validateProjectEntityContainment(req.body.project, verifiedUid);
+      if (!containment.valid) {
+        return sendApiError(res, 400, {
+          code: 'INVALID_CONTAINMENT',
+          message: 'Project entity containment validation failed: ' + containment.errors[0],
+          details: containment.errors.join('; '),
+          stage: 'prompts',
+          retryable: false,
+        });
+      }
+    }
+
     const provider = getAIProvider(req.body.providerId);
     if (!provider.isAvailable()) {
       return sendApiError(res, 503, {
@@ -556,4 +808,10 @@ async function startServer() {
   });
 }
 
-startServer();
+const isTestRun =
+  process.env.NODE_ENV === 'test' ||
+  process.argv.some((arg) => arg.includes('test') || arg.includes('vitest'));
+
+if (!isTestRun) {
+  startServer();
+}

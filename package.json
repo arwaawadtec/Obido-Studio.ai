@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx test/provider-resilience.test.ts && tsx test/cloud-foundation.test.ts && tsx test/cloud-integration-verification.test.ts && tsx test/auth-error-transparency.test.ts && tsx test/password-visibility-recovery.test.ts && tsx test/lifecycle-security-fixes.test.ts && tsx test/shot-list-domain.test.ts && tsx test/profile-safety-reconnection.test.ts && tsx test/shot-prompts-and-generation.test.ts && tsx test/phase2-domain-services.test.ts"
+    "test": "tsx test/provider-resilience.test.ts && tsx test/cloud-foundation.test.ts && tsx test/cloud-integration-verification.test.ts && tsx test/auth-error-transparency.test.ts && tsx test/password-visibility-recovery.test.ts && tsx test/lifecycle-security-fixes.test.ts && tsx test/shot-list-domain.test.ts && tsx test/profile-safety-reconnection.test.ts && tsx test/shot-prompts-and-generation.test.ts && tsx test/phase2-domain-services.test.ts && tsx test/phase2-server-authorization.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
