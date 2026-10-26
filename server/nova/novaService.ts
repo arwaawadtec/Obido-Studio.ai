@@ -58,6 +58,7 @@ export interface NovaChatResponse {
   stageInsight: string;
   suggestedActions: NovaSuggestedAction[];
   pacingSummary: NovaPacingSummary;
+  source: 'gemini_model' | 'director_rules';
   timestamp: string;
 }
 
@@ -154,6 +155,7 @@ export class NovaService {
               ? enrichedReply.suggestedActions
               : fallbackResponse.suggestedActions,
             pacingSummary: pacing,
+            source: 'gemini_model',
             timestamp: new Date().toISOString(),
           };
         }
@@ -169,6 +171,7 @@ export class NovaService {
       stageInsight: fallbackResponse.stageInsight,
       suggestedActions: fallbackResponse.suggestedActions,
       pacingSummary: pacing,
+      source: 'director_rules',
       timestamp: new Date().toISOString(),
     };
   }

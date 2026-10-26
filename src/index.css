@@ -1,111 +1,191 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Kufi+Arabic:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap");
 @import "tailwindcss";
 
-@layer base {
-  @font-face {
-    font-family: 'Creato Display';
-    src: local('Creato Display'), local('CreatoDisplay-Bold'), local('CreatoDisplay');
-    font-weight: 400 800;
-    font-display: swap;
-  }
+/* Self-hosted verified font-face assets in /fonts/ ensuring 100% offline and ad-blocker resilience */
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  src: url('/fonts/plus-jakarta-sans-700-latin.woff2') format('woff2');
+  font-weight: 700 800;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC;
+}
 
-  @font-face {
-    font-family: 'Nasser';
-    src: local('Nasser'), local('Nasser Font'), local('Nasser-Regular');
-    font-weight: 400 700;
-    font-display: swap;
-  }
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  src: url('/fonts/plus-jakarta-sans-500-latin.woff2') format('woff2');
+  font-weight: 400 600;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC;
+}
 
-  @font-face {
-    font-family: 'Maryam';
-    src: local('Maryam'), local('Maryam Font'), local('Maryam-Regular');
-    font-weight: 400 700;
-    font-display: swap;
-  }
+@font-face {
+  font-family: 'Noto Kufi Arabic';
+  src: url('/fonts/noto-kufi-arabic-600-arabic.woff2') format('woff2');
+  font-weight: 400 800;
+  font-display: swap;
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-0891, U+0897-08E1, U+FB50-FDFF, U+FE70-FEFC;
+}
 
-  @font-face {
-    font-family: 'Fatimid Kufi';
-    src: local('Fatimid Kufi'), local('FatimidKufi');
-    font-weight: 400 800;
-    font-display: swap;
-  }
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  src: url('/fonts/ibm-plex-sans-arabic-400-arabic.woff2') format('woff2');
+  font-weight: 400 700;
+  font-display: swap;
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-0891, U+0897-08E1, U+FB50-FDFF, U+FE70-FEFC;
+}
 
-  :root {
-    --color-primary: #635BFF;
-    --color-navy: #11152B;
-    --color-violet: #9B8CFF;
-    --color-cyan: #38D9F9;
-    --color-magenta: #E879F9;
-    --color-canvas: #F6F7FB;
-    --color-surface: #FFFFFF;
-    --color-text-primary: #171A2B;
-    --color-text-secondary: #62677A;
-    --color-border: #E3E6EF;
+@font-face {
+  font-family: 'Inter';
+  src: url('/fonts/inter-400-latin.woff2') format('woff2');
+  font-weight: 300 500;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153;
+}
 
-    /* Centralized Typography Tokens */
-    --font-display-en: 'Creato Display', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    --font-body-en: 'Helvetica Neue', 'Inter', Arial, sans-serif;
-    --font-display-ar: 'Nasser', 'Fatimid Kufi', 'Modern Kufi', 'Noto Kufi Arabic', 'IBM Plex Sans Arabic', sans-serif;
-    --font-body-ar: 'Maryam', 'Nasser', 'IBM Plex Sans Arabic', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+@font-face {
+  font-family: 'Inter';
+  src: url('/fonts/inter-600-latin.woff2') format('woff2');
+  font-weight: 600 700;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153;
+}
 
-    /* Semantic typography roles mapped to active language */
-    --font-display: var(--font-display-en);
-    --font-body: var(--font-body-en);
-  }
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/jetbrains-mono-400-latin.woff2') format('woff2');
+  font-weight: 400 700;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153;
+}
 
-  [dir="rtl"],
-  [lang="ar"],
-  :root[dir="rtl"],
-  :root[lang="ar"] {
-    --font-display: var(--font-display-ar);
-    --font-body: var(--font-body-ar);
-  }
+@theme {
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
+}
 
-  body {
-    font-family: var(--font-body);
-    background-color: var(--color-canvas);
-    color: var(--color-text-primary);
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    line-height: 1.5;
-  }
+:root {
+  --color-primary: #635BFF;
+  --color-navy: #11152B;
+  --color-violet: #9B8CFF;
+  --color-cyan: #38D9F9;
+  --color-magenta: #E879F9;
+  --color-canvas: #F6F7FB;
+  --color-surface: #FFFFFF;
+  --color-text-primary: #171A2B;
+  --color-text-secondary: #62677A;
+  --color-border: #E3E6EF;
 
-  [dir="rtl"] body,
-  [dir="rtl"],
-  [lang="ar"] {
-    font-family: var(--font-body-ar);
-    line-height: 1.65;
-  }
+  /* Centralized Typography Tokens */
+  /* English Display Headings: Creato Display (if supplied) -> Plus Jakarta Sans (active display) -> system */
+  --font-display-en: 'Creato Display', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  /* English UI / Body Text: Helvetica Neue (if available) -> Inter (active body) -> Arial -> sans-serif */
+  --font-body-en: 'Helvetica Neue', 'Inter', Arial, sans-serif;
 
-  h1, h2, h3, h4, h5, h6, .font-display {
-    font-family: var(--font-display);
-    letter-spacing: -0.02em;
-  }
+  /* Arabic Display Headings: Nasser / Fatimid Kufi (if supplied) -> Noto Kufi Arabic (geometric display) -> IBM Plex Sans Arabic -> sans-serif */
+  --font-display-ar: 'Nasser', 'Fatimid Kufi', 'Modern Kufi', 'Noto Kufi Arabic', 'IBM Plex Sans Arabic', sans-serif;
+  /* Arabic UI / Body Text: Maryam / Nasser (if supplied) -> IBM Plex Sans Arabic (active body) -> sans-serif */
+  --font-body-ar: 'Maryam', 'Nasser', 'IBM Plex Sans Arabic', -apple-system, BlinkMacSystemFont, sans-serif;
 
-  [dir="rtl"] h1, 
-  [dir="rtl"] h2, 
-  [dir="rtl"] h3,
-  [dir="rtl"] h4,
-  [dir="rtl"] h5,
-  [dir="rtl"] h6,
-  [dir="rtl"] .font-display,
-  [lang="ar"] h1,
-  [lang="ar"] h2,
-  [lang="ar"] h3,
-  [lang="ar"] .font-display {
-    font-family: var(--font-display-ar);
-    letter-spacing: normal;
-    line-height: 1.35;
-  }
+  /* Monospace / Code / Tabular figures */
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
-  .font-body {
-    font-family: var(--font-body);
-  }
+  /* Semantic typography roles mapped to active language (default English) */
+  --font-display: var(--font-display-en);
+  --font-body: var(--font-body-en);
+}
 
-  .font-mono, .tabular-nums {
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
+/* Language and RTL Overrides for Root and Contexts */
+:root[dir="rtl"],
+:root[lang="ar"],
+html[dir="rtl"],
+html[lang="ar"],
+body[dir="rtl"],
+[dir="rtl"],
+[lang="ar"] {
+  --font-display: var(--font-display-ar);
+  --font-body: var(--font-body-ar);
+}
+
+/* Universal Base Typography Application */
+html,
+body,
+#root {
+  font-family: var(--font-body);
+  background-color: var(--color-canvas);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.5;
+}
+
+[dir="rtl"] html,
+[dir="rtl"] body,
+[dir="rtl"] #root,
+html[dir="rtl"] body,
+html[lang="ar"] body {
+  font-family: var(--font-body-ar);
+  line-height: 1.65;
+}
+
+/* Headings (h1 - h6) & Display Elements */
+h1, h2, h3, h4, h5, h6,
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+h1 *, h2 *, h3 *, h4 *, h5 *, h6 *,
+.font-display * {
+  font-family: inherit;
+}
+
+[dir="rtl"] h1, [dir="rtl"] h2, [dir="rtl"] h3, [dir="rtl"] h4, [dir="rtl"] h5, [dir="rtl"] h6,
+[dir="rtl"] .font-display,
+[lang="ar"] h1, [lang="ar"] h2, [lang="ar"] h3, [lang="ar"] h4, [lang="ar"] h5, [lang="ar"] h6,
+[lang="ar"] .font-display,
+html[dir="rtl"] h1, html[dir="rtl"] h2, html[dir="rtl"] h3, html[dir="rtl"] h4, html[dir="rtl"] h5, html[dir="rtl"] h6,
+html[dir="rtl"] .font-display,
+html[lang="ar"] h1, html[lang="ar"] h2, html[lang="ar"] h3, html[lang="ar"] h4, html[lang="ar"] h5, html[lang="ar"] h6,
+html[lang="ar"] .font-display {
+  font-family: var(--font-display-ar);
+  letter-spacing: normal;
+  line-height: 1.35;
+}
+
+/* UI Controls, Form Fields, Buttons, Inputs, Labels */
+button,
+input,
+textarea,
+select,
+label,
+optgroup,
+.font-body {
+  font-family: var(--font-body);
+}
+
+[dir="rtl"] button, [dir="rtl"] input, [dir="rtl"] textarea, [dir="rtl"] select, [dir="rtl"] label,
+[lang="ar"] button, [lang="ar"] input, [lang="ar"] textarea, [lang="ar"] select, [lang="ar"] label,
+html[dir="rtl"] button, html[dir="rtl"] input, html[dir="rtl"] textarea, html[dir="rtl"] select, html[dir="rtl"] label,
+html[lang="ar"] button, html[lang="ar"] input, html[lang="ar"] textarea, html[lang="ar"] select, html[lang="ar"] label,
+[dir="rtl"] .font-body, [lang="ar"] .font-body, html[dir="rtl"] .font-body, html[lang="ar"] .font-body {
+  font-family: var(--font-body-ar);
+}
+
+/* Monospace, Tabular Figures, Code */
+code,
+kbd,
+samp,
+pre,
+.font-mono,
+.tabular-nums {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.font-mono *,
+.tabular-nums * {
+  font-family: inherit;
 }
 
 /* Custom dark media workspace scrollbars */

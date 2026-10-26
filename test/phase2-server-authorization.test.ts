@@ -325,8 +325,52 @@ async function runPhase2AuthorizationTests() {
     console.log('  ✓ 10. Rejects cross-project entity references (shot belonging to foreign project)');
   }
 
+  // --- Test 11: Rejects forged fallback tokens (fb_fallback_...) ---
+  {
+    const forgedReq: any = {
+      headers: {
+        authorization: `Bearer fb_fallback_${authenticatedUid}`,
+      },
+      body: {
+        userId: authenticatedUid,
+      },
+    };
+    const res = createMockResponse();
+    let nextCalled = false;
+
+    requireAuth(forgedReq, res, () => {
+      nextCalled = true;
+    });
+
+    assert.strictEqual(nextCalled, false, 'Forged fallback token must be rejected');
+    assert.strictEqual(res.statusCode, 401, 'Expected 401 status for forged fallback token');
+    assert.strictEqual(res.body?.code, 'FORGED_FALLBACK_TOKEN_REJECTED');
+    console.log('  ✓ 11. Security Audit: Client-crafted fallback tokens (fb_fallback_) are strictly rejected (401 FORGED_FALLBACK_TOKEN_REJECTED)');
+  }
+
+  // --- Test 12: Rejects expired or malformed JWT tokens ---
+  {
+    const malformedReq: any = {
+      headers: {
+        authorization: 'Bearer not_a_valid_jwt_token',
+      },
+      body: {},
+    };
+    const res = createMockResponse();
+    let nextCalled = false;
+
+    requireAuth(malformedReq, res, () => {
+      nextCalled = true;
+    });
+
+    assert.strictEqual(nextCalled, false, 'Malformed token must be rejected');
+    assert.strictEqual(res.statusCode, 401);
+    assert.strictEqual(res.body?.code, 'INVALID_TOKEN');
+    console.log('  ✓ 12. Security Audit: Malformed or unverified tokens rejected with 401 INVALID_TOKEN');
+  }
+
   console.log('========================================================================');
-  console.log('   Phase 2 Server Authorization Results: 10 PASSED | 0 FAILED           ');
+  console.log('   Phase 2 Server Authorization Results: 12 PASSED | 0 FAILED           ');
   console.log('========================================================================');
 }
 

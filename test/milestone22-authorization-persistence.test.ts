@@ -88,6 +88,18 @@ async function runMilestone22Tests() {
     assert.strictEqual(res.statusCode, 403);
     assert.strictEqual(res.body?.code, 'IDENTITY_MISMATCH');
 
+    // Fallback token forgery attack: Attacker crafts fb_fallback_${victim} to impersonate victim
+    const forgedFallbackReq: any = {
+      headers: { authorization: `Bearer fb_fallback_${creatorUid}` },
+      body: { userId: creatorUid },
+    };
+    const fallbackRes = createMockResponse();
+    let fallbackNextCalled = false;
+    requireAuth(forgedFallbackReq, fallbackRes, () => { fallbackNextCalled = true; });
+    assert.strictEqual(fallbackNextCalled, false, 'Forged fallback token MUST be rejected at mutation boundary');
+    assert.strictEqual(fallbackRes.statusCode, 401);
+    assert.strictEqual(fallbackRes.body?.code, 'FORGED_FALLBACK_TOKEN_REJECTED');
+
     // Valid request correctly derives UID from token
     const validReq: any = {
       headers: { authorization: `Bearer demo_token_${creatorUid}` },
@@ -95,7 +107,7 @@ async function runMilestone22Tests() {
     };
     requireAuth(validReq, createMockResponse(), () => {});
     assert.strictEqual(validReq.user?.verifiedUid, creatorUid);
-    console.log('  ✓ 2. Workstream A: Server derives identity from verified token, blocking claimed UID spoofing');
+    console.log('  ✓ 2. Workstream A: Server derives identity from verified token, blocking claimed UID spoofing and forged fallback tokens');
   }
 
   // Test 3: Rejects mutation on foreign project

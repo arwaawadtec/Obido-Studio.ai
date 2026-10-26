@@ -14,7 +14,7 @@ process.env.NODE_ENV = 'test';
 
 import assert from 'assert';
 import { novaService, NovaService } from '../server/nova/novaService';
-import { validateProjectEntityContainment } from '../server';
+import { validateProjectEntityContainment, requireAuth } from '../server';
 
 // Mock Express response helper
 function createMockResponse() {
@@ -210,8 +210,51 @@ async function runPhase3NovaTests() {
     console.log('✔ Test 7 Passed: Stage-accurate guidance verified across all workflow stages.');
   }
 
+  // --- Test 8: Nova Security Boundary — Rejects Unauthenticated & Forged Fallback Tokens ---
+  {
+    // A. Missing token
+    const unauthReq: any = { headers: {}, body: {} };
+    const unauthRes = createMockResponse();
+    let unauthCalled = false;
+    requireAuth(unauthReq, unauthRes, () => { unauthCalled = true; });
+    assert.strictEqual(unauthCalled, false);
+    assert.strictEqual(unauthRes.statusCode, 401);
+    assert.strictEqual(unauthRes.body?.code, 'UNAUTHENTICATED');
+
+    // B. Forged fallback token (fb_fallback_...)
+    const forgedReq: any = {
+      headers: { authorization: `Bearer fb_fallback_${authenticatedUid}` },
+      body: { userId: authenticatedUid },
+    };
+    const forgedRes = createMockResponse();
+    let forgedCalled = false;
+    requireAuth(forgedReq, forgedRes, () => { forgedCalled = true; });
+    assert.strictEqual(forgedCalled, false);
+    assert.strictEqual(forgedRes.statusCode, 401);
+    assert.strictEqual(forgedRes.body?.code, 'FORGED_FALLBACK_TOKEN_REJECTED');
+    console.log('✔ Test 8 Passed: Nova endpoint authorization strictly rejects unauthenticated calls and forged fallback tokens.');
+  }
+
+  // --- Test 9: Response Mode Discriminator (AI vs Deterministic Rules) ---
+  {
+    const res = await testNova.processChat({
+      projectId: 'proj_alice_123',
+      currentStage: 'brief',
+      actionType: 'explain_stage',
+      project: {
+        id: 'proj_alice_123',
+        userId: authenticatedUid,
+        title: 'Cinematic Flow',
+        brief: { targetDurationSeconds: 45 },
+      },
+    });
+
+    assert.strictEqual(res.source, 'director_rules', 'Offline test instance must report director_rules as source');
+    console.log('✔ Test 9 Passed: Nova responses explicitly distinguish model-generated vs deterministic rule sources.');
+  }
+
   console.log('========================================================================');
-  console.log('   All 7 Phase 3 Nova Assistant Tests Passed with 100% Reliability!     ');
+  console.log('   All 9 Phase 3 Nova Assistant Tests Passed with 100% Reliability!     ');
   console.log('========================================================================');
 }
 

@@ -23,10 +23,12 @@ import {
   Clock,
   ChevronRight,
   ExternalLink,
+  Eye,
 } from 'lucide-react';
 import { router } from '../../services/router';
 import { auth } from '../../services/auth';
 import { storage, TEMPLATES } from '../../services/storage';
+import { TypographyInspectorModal } from '../common/TypographyInspectorModal';
 
 interface LandingPageProps {
   onOpenHelp: () => void;
@@ -39,6 +41,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenHelp }) => {
 
   const [previewTab, setPreviewTab] = useState<'editor' | 'storyboard' | 'prompts'>('editor');
   const [legalModal, setLegalModal] = useState<'privacy' | 'terms' | 'contact' | null>(null);
+  const [isTypographyInspectorOpen, setIsTypographyInspectorOpen] = useState(false);
 
   const toggleLang = () => {
     const next = lang === 'en' ? 'ar' : 'en';
@@ -671,12 +674,26 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenHelp }) => {
         <div className="max-w-7xl mx-auto pt-6 border-t border-[#E3E6EF] flex flex-col sm:flex-row items-center justify-between gap-4 text-[11px]">
           <span>© {new Date().getFullYear()} Obido Studio. All rights reserved.</span>
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setIsTypographyInspectorOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-[#635BFF] bg-[#635BFF]/10 hover:bg-[#635BFF]/20 rounded-md transition-colors"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>{lang === 'ar' ? 'فاحص الخطوط والتنسيق القسري' : 'Typography & Reset Inspector'}</span>
+            </button>
+            <span aria-hidden="true" className="text-[#62677A]/40">·</span>
             <span>Inter & IBM Plex Sans Arabic</span>
             <span>·</span>
             <span className="text-[#635BFF] font-medium">v1.0 Foundation</span>
           </div>
         </div>
       </footer>
+
+      {/* Typography & Forced Style Reset Inspector Modal */}
+      <TypographyInspectorModal
+        isOpen={isTypographyInspectorOpen}
+        onClose={() => setIsTypographyInspectorOpen(false)}
+      />
 
       {/* Internal Legal / Contact Modals */}
       {legalModal && (

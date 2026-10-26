@@ -134,11 +134,35 @@ app.post('/api/auth/verify', async (req, res) => {
     let verifiedUid = '';
     let email = '';
 
-    if (token.startsWith('demo_token_') || token.startsWith('fb_fallback_')) {
-      // Local demo token or Firebase STS fallback token
-      verifiedUid = token.startsWith('demo_token_')
-        ? token.replace('demo_token_', '')
-        : token.replace('fb_fallback_', '');
+    // Reject insecure client-forged fallback tokens immediately
+    if (token.startsWith('fb_fallback_')) {
+      return sendApiError(res, 401, {
+        code: 'FORGED_FALLBACK_TOKEN_REJECTED',
+        message: 'Insecure client-constructed fallback tokens are strictly forbidden. Authentic Firebase ID token required.',
+        field: 'token',
+        stage: 'auth',
+        retryable: false,
+      });
+    }
+
+    if (token.startsWith('demo_token_')) {
+      // Local demo token for sandbox testing
+      verifiedUid = token.replace('demo_token_', '');
+      const isTest = process.env.NODE_ENV === 'test';
+      const isDemoIdentity =
+        verifiedUid.startsWith('user_demo_') ||
+        verifiedUid === 'user_default' ||
+        (isTest && (verifiedUid.startsWith('usr_') || verifiedUid.startsWith('user_')));
+
+      if (!isDemoIdentity && !isTest) {
+        return sendApiError(res, 401, {
+          code: 'UNAUTHORIZED_DEMO_TOKEN',
+          message: 'Demo tokens cannot be used to authenticate cloud user accounts.',
+          field: 'token',
+          stage: 'auth',
+          retryable: false,
+        });
+      }
       email = `${verifiedUid}@obidostudio.com`;
     } else {
       // Decode Firebase JWT payload safely
@@ -217,11 +241,35 @@ export function requireAuth(req: express.Request, res: express.Response, next: e
     });
   }
 
-  // Handle local demo sandbox tokens and Firebase STS fallback tokens
-  if (token.startsWith('demo_token_') || token.startsWith('fb_fallback_')) {
-    const verifiedUid = token.startsWith('demo_token_')
-      ? token.replace('demo_token_', '')
-      : token.replace('fb_fallback_', '');
+  // Reject insecure client-forged fallback tokens immediately
+  if (token.startsWith('fb_fallback_')) {
+    return sendApiError(res, 401, {
+      code: 'FORGED_FALLBACK_TOKEN_REJECTED',
+      message: 'Insecure client-constructed fallback tokens are strictly forbidden. Authentic Firebase ID token required.',
+      field: 'Authorization',
+      stage: 'auth',
+      retryable: false,
+    });
+  }
+
+  // Handle local demo sandbox tokens strictly
+  if (token.startsWith('demo_token_')) {
+    const verifiedUid = token.replace('demo_token_', '');
+    const isTest = process.env.NODE_ENV === 'test';
+    const isDemoIdentity =
+      verifiedUid.startsWith('user_demo_') ||
+      verifiedUid === 'user_default' ||
+      (isTest && (verifiedUid.startsWith('usr_') || verifiedUid.startsWith('user_')));
+
+    if (!isDemoIdentity && !isTest) {
+      return sendApiError(res, 401, {
+        code: 'UNAUTHORIZED_DEMO_TOKEN',
+        message: 'Demo tokens cannot be used to authenticate cloud user accounts.',
+        field: 'Authorization',
+        stage: 'auth',
+        retryable: false,
+      });
+    }
 
     if (req.body?.userId && req.body.userId !== verifiedUid) {
       return sendApiError(res, 403, {
@@ -236,8 +284,8 @@ export function requireAuth(req: express.Request, res: express.Response, next: e
     (req as any).user = {
       verifiedUid,
       email: `${verifiedUid}@obidostudio.com`,
-      isDemo: token.startsWith('demo_token_'),
-      isFallback: token.startsWith('fb_fallback_'),
+      isDemo: true,
+      isFallback: false,
     };
     return next();
   }

@@ -18,12 +18,15 @@ import {
   RefreshCw,
   CloudUpload,
   Database,
+  X,
+  Eye,
 } from 'lucide-react';
 import { Project } from '../../types';
 import { storage, TEMPLATES } from '../../services/storage';
 import { auth } from '../../services/auth';
 import { migrationBridge } from '../../services/migrationBridge';
 import { MigrationModal } from './MigrationModal';
+import { TypographyInspectorModal } from '../common/TypographyInspectorModal';
 
 interface DashboardProps {
   projects: Project[];
@@ -47,6 +50,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
 
   const [isMigrationModalOpen, setIsMigrationModalOpen] = useState(false);
+  const [isTypographyInspectorOpen, setIsTypographyInspectorOpen] = useState(false);
+  const [downloadToast, setDownloadToast] = useState<{
+    visible: boolean;
+    title: string;
+    filename: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (downloadToast?.visible) {
+      const timer = setTimeout(() => {
+        setDownloadToast(null);
+      }, 4500);
+      return () => clearTimeout(timer);
+    }
+  }, [downloadToast]);
+
   const currentUser = auth.getCurrentUser();
   const isCloudMode = auth.isFirebaseConfigured() && currentUser?.authType === 'cloud';
   const pendingLocalProjects = migrationBridge.getPendingProjects();
@@ -102,12 +121,19 @@ export const Dashboard: React.FC<DashboardProps> = ({
       const downloadAnchor = document.createElement('a');
       const safeTitle = (projectToExport.title || 'obido_project').replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, '_');
       const dateStr = new Date().toISOString().slice(0, 10);
+      const filename = `${safeTitle}_backup_${dateStr}.json`;
       downloadAnchor.href = url;
-      downloadAnchor.download = `${safeTitle}_backup_${dateStr}.json`;
+      downloadAnchor.download = filename;
       document.body.appendChild(downloadAnchor);
       downloadAnchor.click();
       downloadAnchor.remove();
       URL.revokeObjectURL(url);
+
+      setDownloadToast({
+        visible: true,
+        title: projectToExport.title || 'Untitled Project',
+        filename,
+      });
     } catch (err) {
       console.error('[Dashboard] Failed to export project backup:', err);
     }
@@ -174,6 +200,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
             >
               <Upload className="w-3.5 h-3.5" />
               <span>{lang === 'ar' ? 'استيراد مشروع' : 'Import Project'}</span>
+            </button>
+
+            <button
+              onClick={() => setIsTypographyInspectorOpen(true)}
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold text-white bg-white/10 hover:bg-white/15 rounded-lg border border-white/10 transition-colors whitespace-nowrap"
+              title="Inspect typography, Google Fonts delivery, and forced style reset"
+            >
+              <Eye className="w-3.5 h-3.5 text-[#38D9F9]" />
+              <span>{lang === 'ar' ? 'فحص الخطوط' : 'Font Inspector'}</span>
             </button>
 
             <button
@@ -568,6 +603,49 @@ export const Dashboard: React.FC<DashboardProps> = ({
           onRetryQuery?.();
         }}
       />
+
+      {/* Typography & Forced Style Reset Inspector Modal */}
+      <TypographyInspectorModal
+        isOpen={isTypographyInspectorOpen}
+        onClose={() => setIsTypographyInspectorOpen(false)}
+      />
+
+      {/* Download Success Toast Notification */}
+      {downloadToast && downloadToast.visible && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-6 right-6 z-50 flex items-start gap-3 bg-[#11152B] text-white px-4 py-3.5 rounded-xl border border-[#242833] shadow-2xl max-w-md animate-in fade-in slide-in-from-bottom-3 duration-200"
+          style={{ fontFamily: 'var(--font-body)' }}
+        >
+          <div className="p-1.5 bg-[#16A34A]/20 border border-[#16A34A]/30 rounded-lg text-[#4ADE80] shrink-0 mt-0.5">
+            <CheckCircle2 className="w-4 h-4" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="text-xs font-bold text-white font-display">
+                {lang === 'ar' ? 'تم تنزيل النسخة الاحتياطية بنجاح' : 'Backup Downloaded Successfully'}
+              </h4>
+              <button
+                type="button"
+                onClick={() => setDownloadToast(null)}
+                className="text-[#8E95AA] hover:text-white transition-colors"
+                title="Dismiss"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <p className="text-[11px] text-[#38D9F9] font-mono mt-0.5 truncate">
+              {downloadToast.filename}
+            </p>
+            <p className="text-[10px] text-[#8E95AA] mt-1 leading-normal">
+              {lang === 'ar'
+                ? `تم حفظ ملف "${downloadToast.title}" كنسخة احتياطية محلية جاهزة للاستيراد في أي وقت.`
+                : `Backup file for "${downloadToast.title}" is saved locally and ready for offline safe-keeping or re-import.`}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
