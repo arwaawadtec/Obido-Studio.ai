@@ -92,6 +92,27 @@ export const Dashboard: React.FC<DashboardProps> = ({
     input.click();
   };
 
+  const handleDownloadProject = (e: React.MouseEvent, projectToExport: Project) => {
+    e.stopPropagation();
+    try {
+      const cleanProject = JSON.parse(JSON.stringify(projectToExport));
+      const jsonString = JSON.stringify(cleanProject, null, 2);
+      const blob = new Blob([jsonString], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const downloadAnchor = document.createElement('a');
+      const safeTitle = (projectToExport.title || 'obido_project').replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, '_');
+      const dateStr = new Date().toISOString().slice(0, 10);
+      downloadAnchor.href = url;
+      downloadAnchor.download = `${safeTitle}_backup_${dateStr}.json`;
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('[Dashboard] Failed to export project backup:', err);
+    }
+  };
+
   const formatStageLabel = (stage: string) => {
     switch (stage) {
       case 'brief': return lang === 'ar' ? 'الملخص' : 'Brief';
@@ -229,13 +250,25 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </p>
           </div>
 
-          <button
-            onClick={() => onSelectProject(mostRecentProject.id)}
-            className="flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#11152B] hover:bg-[#635BFF] rounded-lg transition-colors whitespace-nowrap self-start md:self-auto"
-          >
-            <span>{lang === 'ar' ? 'متابعة الإنتاج' : 'Resume Production'}</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-2 self-start md:self-auto">
+            <button
+              type="button"
+              onClick={(e) => handleDownloadProject(e, mostRecentProject)}
+              title={lang === 'ar' ? 'تنزيل نسخة احتياطية محلية بصيغة JSON' : 'Download local project backup JSON'}
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#11152B] bg-[#F6F7FB] hover:bg-[#E3E6EF] border border-[#CBD1E1] rounded-lg transition-colors whitespace-nowrap cursor-pointer shadow-xs"
+            >
+              <Download className="w-3.5 h-3.5 text-[#635BFF]" />
+              <span>{lang === 'ar' ? 'تنزيل المشروع' : 'Download Project'}</span>
+            </button>
+
+            <button
+              onClick={() => onSelectProject(mostRecentProject.id)}
+              className="flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#11152B] hover:bg-[#635BFF] rounded-lg transition-colors whitespace-nowrap cursor-pointer shadow-xs"
+            >
+              <span>{lang === 'ar' ? 'متابعة الإنتاج' : 'Resume Production'}</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       )}
 
@@ -505,10 +538,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <span className="text-xs text-[#62677A]">
                       {project.brief.language} · {project.brief.purpose}
                     </span>
-                    <span className="text-[#635BFF] font-semibold flex items-center gap-1 group-hover:translate-x-0.5 transition-transform">
-                      <span>{lang === 'ar' ? 'فتح' : 'Open'}</span>
-                      <ArrowRight className="w-3 h-3" />
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => handleDownloadProject(e, project)}
+                        title={lang === 'ar' ? 'تنزيل نسخة احتياطية من هذا المشروع' : 'Download project backup JSON'}
+                        className="p-1 text-[#62677A] hover:text-[#635BFF] hover:bg-[#F6F7FB] rounded-md transition-colors cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </button>
+                      <span className="text-[#635BFF] font-semibold flex items-center gap-1 group-hover:translate-x-0.5 transition-transform">
+                        <span>{lang === 'ar' ? 'فتح' : 'Open'}</span>
+                        <ArrowRight className="w-3 h-3" />
+                      </span>
+                    </div>
                   </div>
                 </div>
               );

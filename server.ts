@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { getAIProvider, aiRegistry } from './server/providers';
 import { normalizeAIError } from './server/resilience/retry';
 import { domainService } from './src/services/domainService';
+import { novaService } from './server/nova/novaService';
 
 dotenv.config();
 
@@ -958,6 +959,57 @@ app.post('/api/ai/refine-brief', requireAuth, async (req, res) => {
       details: normalized.details,
       stage: 'brief',
       retryable: normalized.retryable,
+    });
+  }
+});
+
+// AI Nova Production Assistant Endpoint (Phase 3)
+app.post('/api/nova/chat', requireAuth, async (req, res) => {
+  try {
+    const verifiedUid = (req as any).user?.verifiedUid;
+
+    // Cross-user authorization check
+    if (req.body.project) {
+      if (req.body.project.userId && req.body.project.userId !== verifiedUid) {
+        return sendApiError(res, 403, {
+          code: 'PROJECT_ACCESS_DENIED',
+          message: `Forbidden: Project belongs to user "${req.body.project.userId}", not authenticated user "${verifiedUid}".`,
+          field: 'userId',
+          stage: 'nova',
+          retryable: false,
+        });
+      }
+
+      const containment = validateProjectEntityContainment(req.body.project, verifiedUid);
+      if (!containment.valid) {
+        return sendApiError(res, 400, {
+          code: 'INVALID_CONTAINMENT',
+          message: 'Project entity containment validation failed: ' + containment.errors[0],
+          details: containment.errors.join('; '),
+          stage: 'nova',
+          retryable: false,
+        });
+      }
+    }
+
+    const response = await novaService.processChat({
+      projectId: req.body.projectId,
+      currentStage: req.body.currentStage,
+      message: req.body.message,
+      actionType: req.body.actionType,
+      targetEntityId: req.body.targetEntityId,
+      projectSummary: req.body.projectSummary,
+      project: req.body.project,
+    });
+
+    res.json(response);
+  } catch (error: any) {
+    console.error('[AI Error - /api/nova/chat]:', error);
+    sendApiError(res, 500, {
+      code: 'NOVA_PROCESSING_ERROR',
+      message: error.message || 'Failed to process Nova production assistant request.',
+      stage: 'nova',
+      retryable: true,
     });
   }
 });

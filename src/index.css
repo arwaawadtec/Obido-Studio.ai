@@ -1,6 +1,34 @@
 @import "tailwindcss";
 
 @layer base {
+  @font-face {
+    font-family: 'Creato Display';
+    src: local('Creato Display'), local('CreatoDisplay-Bold'), local('CreatoDisplay');
+    font-weight: 400 800;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: 'Nasser';
+    src: local('Nasser'), local('Nasser Font'), local('Nasser-Regular');
+    font-weight: 400 700;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: 'Maryam';
+    src: local('Maryam'), local('Maryam Font'), local('Maryam-Regular');
+    font-weight: 400 700;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: 'Fatimid Kufi';
+    src: local('Fatimid Kufi'), local('FatimidKufi');
+    font-weight: 400 800;
+    font-display: swap;
+  }
+
   :root {
     --color-primary: #635BFF;
     --color-navy: #11152B;
@@ -12,32 +40,70 @@
     --color-text-primary: #171A2B;
     --color-text-secondary: #62677A;
     --color-border: #E3E6EF;
+
+    /* Centralized Typography Tokens */
+    --font-display-en: 'Creato Display', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-body-en: 'Helvetica Neue', 'Inter', Arial, sans-serif;
+    --font-display-ar: 'Nasser', 'Fatimid Kufi', 'Modern Kufi', 'Noto Kufi Arabic', 'IBM Plex Sans Arabic', sans-serif;
+    --font-body-ar: 'Maryam', 'Nasser', 'IBM Plex Sans Arabic', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    /* Semantic typography roles mapped to active language */
+    --font-display: var(--font-display-en);
+    --font-body: var(--font-body-en);
+  }
+
+  [dir="rtl"],
+  [lang="ar"],
+  :root[dir="rtl"],
+  :root[lang="ar"] {
+    --font-display: var(--font-display-ar);
+    --font-body: var(--font-body-ar);
   }
 
   body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: var(--font-body);
     background-color: var(--color-canvas);
     color: var(--color-text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    line-height: 1.5;
   }
 
   [dir="rtl"] body,
-  [dir="rtl"] {
-    font-family: 'IBM Plex Sans Arabic', 'Inter', -apple-system, sans-serif;
+  [dir="rtl"],
+  [lang="ar"] {
+    font-family: var(--font-body-ar);
+    line-height: 1.65;
   }
 
-  h1, h2, h3, .font-display {
-    font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  h1, h2, h3, h4, h5, h6, .font-display {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
   }
 
   [dir="rtl"] h1, 
   [dir="rtl"] h2, 
   [dir="rtl"] h3,
-  [dir="rtl"] .font-display {
-    font-family: 'IBM Plex Sans Arabic', sans-serif;
+  [dir="rtl"] h4,
+  [dir="rtl"] h5,
+  [dir="rtl"] h6,
+  [dir="rtl"] .font-display,
+  [lang="ar"] h1,
+  [lang="ar"] h2,
+  [lang="ar"] h3,
+  [lang="ar"] .font-display {
+    font-family: var(--font-display-ar);
+    letter-spacing: normal;
+    line-height: 1.35;
+  }
+
+  .font-body {
+    font-family: var(--font-body);
   }
 
   .font-mono, .tabular-nums {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 }

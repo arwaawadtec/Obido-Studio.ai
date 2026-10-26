@@ -14,6 +14,7 @@ import {
   Trash2,
   ArrowLeft,
   Save,
+  Sparkles,
 } from 'lucide-react';
 import { Project, WorkflowStage } from '../../types';
 import { storage } from '../../services/storage';
@@ -23,6 +24,8 @@ interface WorkspaceHeaderProps {
   currentStage: WorkflowStage;
   onSelectStage: (stage: WorkflowStage) => void;
   onBackToDashboard: () => void;
+  isNovaOpen?: boolean;
+  onToggleNova?: () => void;
 }
 
 const STAGES: { id: WorkflowStage; labelEn: string; labelAr: string; icon: any }[] = [
@@ -41,6 +44,8 @@ export const WorkspaceHeader: React.FC<WorkspaceHeaderProps> = ({
   currentStage,
   onSelectStage,
   onBackToDashboard,
+  isNovaOpen,
+  onToggleNova,
 }) => {
   const lang = storage.getLanguagePreference();
 
@@ -93,7 +98,22 @@ export const WorkspaceHeader: React.FC<WorkspaceHeaderProps> = ({
 
         {/* Right Project Actions */}
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 text-[11px] text-[#16A34A] font-medium mr-2">
+          {onToggleNova && (
+            <button
+              onClick={onToggleNova}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md border transition-all ${
+                isNovaOpen
+                  ? 'bg-[#111318] text-white border-[#242833] shadow-sm'
+                  : 'bg-[#635BFF]/10 text-[#635BFF] hover:bg-[#635BFF]/15 border-[#635BFF]/20'
+              }`}
+              title={lang === 'ar' ? 'المساعد الفني نوفا' : 'Nova AI Production Assistant'}
+            >
+              <Sparkles className="w-3.5 h-3.5 text-[#38D9F9]" />
+              <span>Nova AI</span>
+            </button>
+          )}
+
+          <div className="hidden md:flex items-center gap-1 text-[11px] text-[#16A34A] font-medium mr-1">
             <Check className="w-3.5 h-3.5" />
             <span>{lang === 'ar' ? 'محفوظ محلياً' : 'Saved Locally'}</span>
           </div>

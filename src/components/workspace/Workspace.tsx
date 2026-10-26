@@ -10,6 +10,7 @@ import { AssetsStage } from './AssetsStage';
 import { GenerationStage } from './GenerationStage';
 import { EditorStage } from './EditorStage';
 import { ExportStage } from './ExportStage';
+import { NovaAssistant } from '../nova/NovaAssistant';
 
 interface WorkspaceProps {
   project: Project;
@@ -17,54 +18,58 @@ interface WorkspaceProps {
 }
 
 export const Workspace: React.FC<WorkspaceProps> = ({ project, onBackToDashboard }) => {
+  const [activeProject, setActiveProject] = useState<Project>(project);
   const [currentStage, setCurrentStage] = useState<WorkflowStage>(project.currentStage || 'brief');
+  const [isNovaOpen, setIsNovaOpen] = useState(false);
 
   const handleSelectStage = (stage: WorkflowStage) => {
     setCurrentStage(stage);
-    storage.setWorkflowStage(project.id, stage);
+    storage.setWorkflowStage(activeProject.id, stage);
   };
 
   return (
-    <div className="min-h-[calc(100vh-65px)] flex flex-col bg-[#F6F7FB]">
+    <div className="min-h-[calc(100vh-65px)] flex flex-col bg-[#F6F7FB] relative">
       <WorkspaceHeader
-        project={project}
+        project={activeProject}
         currentStage={currentStage}
         onSelectStage={handleSelectStage}
         onBackToDashboard={onBackToDashboard}
+        isNovaOpen={isNovaOpen}
+        onToggleNova={() => setIsNovaOpen(!isNovaOpen)}
       />
 
       <main className="flex-1 px-4 sm:px-6 py-8">
         {currentStage === 'brief' && (
           <BriefStage
-            project={project}
+            project={activeProject}
             onProceedToScript={() => handleSelectStage('script')}
           />
         )}
 
         {currentStage === 'script' && (
           <ScriptStage
-            project={project}
+            project={activeProject}
             onProceedToStoryboard={() => handleSelectStage('storyboard')}
           />
         )}
 
         {currentStage === 'storyboard' && (
           <StoryboardStage
-            project={project}
+            project={activeProject}
             onProceedToPrompts={() => handleSelectStage('prompts')}
           />
         )}
 
         {currentStage === 'prompts' && (
           <PromptsStage
-            project={project}
+            project={activeProject}
             onProceedToGeneration={() => handleSelectStage('generation')}
           />
         )}
 
         {currentStage === 'generation' && (
           <GenerationStage
-            project={project}
+            project={activeProject}
             onProceedToAssets={() => handleSelectStage('assets')}
             onNavigateToPrompts={() => handleSelectStage('prompts')}
           />
@@ -72,20 +77,29 @@ export const Workspace: React.FC<WorkspaceProps> = ({ project, onBackToDashboard
 
         {currentStage === 'assets' && (
           <AssetsStage
-            project={project}
+            project={activeProject}
             onProceedToEditing={() => handleSelectStage('editing')}
           />
         )}
 
         {currentStage === 'editing' && (
           <EditorStage
-            project={project}
+            project={activeProject}
             onProceedToExport={() => handleSelectStage('export')}
           />
         )}
 
-        {currentStage === 'export' && <ExportStage project={project} />}
+        {currentStage === 'export' && <ExportStage project={activeProject} />}
       </main>
+
+      <NovaAssistant
+        project={activeProject}
+        currentStage={currentStage}
+        isOpen={isNovaOpen}
+        onToggle={() => setIsNovaOpen(!isNovaOpen)}
+        onSelectStage={handleSelectStage}
+        onProjectUpdated={setActiveProject}
+      />
     </div>
   );
 };
