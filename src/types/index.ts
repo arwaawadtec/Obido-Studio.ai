@@ -20,6 +20,8 @@ export type VisualStyle =
 export type WorkflowStage =
   | 'brief'
   | 'script'
+  | 'scenes'
+  | 'shots'
   | 'storyboard'
   | 'prompts'
   | 'assets'
@@ -273,6 +275,17 @@ export interface ProviderConfiguration {
   description: string;
 }
 
+export type ProjectPermission = 'owner' | 'editor' | 'viewer';
+
+export interface ProjectCollaborator {
+  email: string;
+  role: 'editor' | 'viewer';
+  invitedAt: string;
+  invitedBy: string;
+  acceptedAt?: string;
+  uid?: string;
+}
+
 export interface Project {
   id: string;
   userId: string;
@@ -299,6 +312,12 @@ export interface Project {
   migratedAt?: string;
   cloudSyncStatus?: 'synced' | 'pending' | 'failed' | 'local_only';
   lastSyncedAt?: string;
+  ownerEmail?: string;
+  collaborators?: ProjectCollaborator[];
+  memberEmails?: string[];
+  editorEmails?: string[];
+  viewerEmails?: string[];
+  userPermission?: ProjectPermission;
 }
 
 export interface SaveProjectResult {

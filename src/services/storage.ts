@@ -1,4 +1,4 @@
-import { Project, VideoTemplate, WorkflowStage, Scene, Shot, PromptVersion, Asset, GenerationJob, TimelineClip } from '../types';
+import { Project, VideoTemplate, WorkflowStage, Scene, Shot, PromptVersion, Asset, GenerationJob, TimelineClip, ProjectCollaborator, ProjectPermission } from '../types';
 import { firestoreService } from './firestoreService';
 import { classifyConnectionError, reconnectNetwork } from './firebase';
 import {
@@ -508,14 +508,32 @@ class StorageService {
     };
   }
 
-  getProjects(userId?: string): Project[] {
+  getProjects(userId?: string, userEmail?: string): Project[] {
+    const cleanEmail = userEmail?.trim().toLowerCase();
     if (!userId) {
       // Unauthenticated / guest preview: return ONLY guest demo projects
-      return this.projects.filter((p) => p.userId === 'user_default');
+      return this.projects
+        .filter((p) => p.userId === 'user_default')
+        .map((p) => ({ ...p, userPermission: 'owner' as ProjectPermission }));
     }
-    // Return ONLY projects belonging to this authenticated user.
-    // Do NOT seed production accounts with demo projects.
-    return this.projects.filter((p) => p.userId === userId);
+    // Return projects owned by this user OR shared with this user via email
+    return this.projects
+      .filter((p) => {
+        if (p.userId === userId) return true;
+        if (cleanEmail && p.memberEmails && p.memberEmails.includes(cleanEmail)) return true;
+        return false;
+      })
+      .map((p) => {
+        let perm: ProjectPermission = 'owner';
+        if (p.userId === userId) {
+          perm = 'owner';
+        } else if (cleanEmail && p.editorEmails?.includes(cleanEmail)) {
+          perm = 'editor';
+        } else if (cleanEmail && p.viewerEmails?.includes(cleanEmail)) {
+          perm = 'viewer';
+        }
+        return { ...p, userPermission: perm };
+      });
   }
 
   /**
@@ -704,25 +722,42 @@ class StorageService {
     return proj;
   }
 
+  private inMemoryActiveProjectId: string | null = null;
+
   getActiveProjectId(userId?: string): string | null {
     try {
-      const stored = localStorage.getItem(ACTIVE_PROJECT_KEY);
-      if (stored) {
-        const proj = this.projects.find((p) => p.id === stored);
+      if (typeof localStorage !== 'undefined') {
+        const stored = localStorage.getItem(ACTIVE_PROJECT_KEY);
+        if (stored) {
+          const proj = this.projects.find((p) => p.id === stored);
+          if (proj && (!userId || proj.userId === userId)) {
+            return stored;
+          }
+        }
+      } else if (this.inMemoryActiveProjectId) {
+        const proj = this.projects.find((p) => p.id === this.inMemoryActiveProjectId);
         if (proj && (!userId || proj.userId === userId)) {
-          return stored;
+          return this.inMemoryActiveProjectId;
         }
       }
       const userProjects = this.getProjects(userId);
       return userProjects[0]?.id ?? null;
     } catch {
-      return null;
+      return this.inMemoryActiveProjectId ?? null;
     }
   }
 
+  getActiveProject(userId?: string): Project | undefined {
+    const activeId = this.getActiveProjectId(userId);
+    return activeId ? this.getProject(activeId, userId) : undefined;
+  }
+
   setActiveProjectId(id: string) {
+    this.inMemoryActiveProjectId = id;
     try {
-      localStorage.setItem(ACTIVE_PROJECT_KEY, id);
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(ACTIVE_PROJECT_KEY, id);
+      }
     } catch {}
     this.notify();
   }
@@ -911,6 +946,8 @@ class StorageService {
     const stagesOrder: WorkflowStage[] = [
       'brief',
       'script',
+      'scenes',
+      'shots',
       'storyboard',
       'prompts',
       'assets',

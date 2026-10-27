@@ -115,7 +115,7 @@ export const BriefStage: React.FC<BriefStageProps> = ({ project, onProceedToScri
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#E3E6EF]">
         <div>
           <div className="text-xs text-[#635BFF] font-semibold tracking-wide uppercase font-mono mb-1">
-            {lang === 'ar' ? 'المرحلة 1 من 8' : 'Stage 1 of 8'}
+            {lang === 'ar' ? 'المرحلة 1 من 10' : 'Stage 1 of 10'}
           </div>
           <h2 className="text-xl font-bold text-[#11152B] font-display">
             {lang === 'ar' ? 'ملخص المشروع والأهداف' : 'Project Brief & Production Goals'}

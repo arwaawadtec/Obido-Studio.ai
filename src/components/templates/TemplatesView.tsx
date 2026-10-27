@@ -2,11 +2,14 @@ import React from 'react';
 import { Layers, ArrowRight, Clock, Monitor, Smartphone, Sparkles } from 'lucide-react';
 import { TEMPLATES, storage } from '../../services/storage';
 
+import { Project } from '../../types';
+
 interface TemplatesViewProps {
   onSelectProject: (projectId: string) => void;
+  activeProject?: Project | null;
 }
 
-export const TemplatesView: React.FC<TemplatesViewProps> = ({ onSelectProject }) => {
+export const TemplatesView: React.FC<TemplatesViewProps> = ({ onSelectProject, activeProject }) => {
   const lang = storage.getLanguagePreference();
 
   const handleUseTemplate = (templateId: string) => {
@@ -18,6 +21,36 @@ export const TemplatesView: React.FC<TemplatesViewProps> = ({ onSelectProject })
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-8 space-y-8">
+      {/* Active Project Navigation Context Banner */}
+      {activeProject && (
+        <div className="p-4 bg-gradient-to-r from-[#635BFF]/10 via-[#38D9F9]/10 to-transparent border border-[#635BFF]/25 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-[#635BFF] text-white flex items-center justify-center shrink-0">
+              <Sparkles className="w-4 h-4 text-[#38D9F9]" />
+            </div>
+            <div>
+              <div className="text-xs font-bold text-[#11152B] flex items-center gap-2">
+                <span>{lang === 'ar' ? 'المشروع النشط قيد الإنتاج:' : 'Active Project in Progress:'}</span>
+                <span className="text-[#635BFF] font-semibold">{activeProject.title}</span>
+              </div>
+              <p className="text-[11px] text-[#62677A] mt-0.5">
+                {lang === 'ar'
+                  ? 'يمكنك استكشاف هذه القوالب واستخدامها في أي وقت دون أن تفقد مسودة مشروعك المفتوح.'
+                  : 'You can explore or spawn new blueprints without losing your active workspace session.'}
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => onSelectProject(activeProject.id)}
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#11152B] hover:bg-[#635BFF] rounded-lg transition-colors shrink-0 shadow-xs cursor-pointer self-start sm:self-auto"
+          >
+            <span>{lang === 'ar' ? 'متابعة التعديل في الاستوديو' : 'Resume in Workspace'}</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       <div>
         <div className="text-xs text-[#635BFF] font-semibold tracking-wide uppercase font-mono mb-1">
           {lang === 'ar' ? 'معرض القوالب الجاهزة' : 'Production Blueprints'}

@@ -339,12 +339,12 @@ CRITICAL RULES:
           stageInsight: 'Screenplay drafting: ensure dialogue and voiceover timing align with shot pacing.',
           suggestedActions: [
             {
-              id: 'act_proceed_to_storyboard',
-              label: 'Proceed to Storyboard',
-              description: 'Transitions to Scene and Shot List breakdown.',
+              id: 'act_proceed_to_scenes',
+              label: 'Proceed to Scenes Stage',
+              description: 'Transitions to Narrative Scene beat organization.',
               actionType: 'navigate_stage',
               requiresConfirmation: false,
-              payload: { targetStage: 'storyboard' },
+              payload: { targetStage: 'scenes' },
             },
             {
               id: 'act_audit_script_pacing',
@@ -356,11 +356,42 @@ CRITICAL RULES:
           ],
         };
 
-      case 'storyboard':
+      case 'scenes':
         return {
-          reply: `Your storyboard currently contains ${pacing.shotCount} shots. To maintain viewer retention, vary your camera angles: establish with a Wide or Medium-Wide, punch in for emotional beats with Close-ups, and end on a focused POV or hero framing.`,
-          stageInsight: `Storyboard contains ${pacing.shotCount} shots across active scenes.`,
+          reply: `In the Scenes stage, establish your story rhythm. Balance exposition, dramatic peaks, and concluding payoffs across scene beats. Ensure cumulative scene durations align with your ${pacing.targetDurationSeconds}s target.`,
+          stageInsight: `Scene Architecture: ${project?.scenes?.length || 0} scenes planned. Pacing status: ${pacing.status}.`,
           suggestedActions: [
+            {
+              id: 'act_proceed_to_shots',
+              label: 'Proceed to Shot List',
+              description: 'Breaks scenes into constituent camera angles and shots.',
+              actionType: 'navigate_stage',
+              requiresConfirmation: false,
+              payload: { targetStage: 'shots' },
+            },
+            {
+              id: 'act_audit_scene_pacing',
+              label: 'Audit Scene Durations',
+              description: 'Calculates total scene durations against project target duration.',
+              actionType: 'check_pacing',
+              requiresConfirmation: false,
+            },
+          ],
+        };
+
+      case 'shots':
+        return {
+          reply: `In the Shot List stage, build dynamic visual pacing. Alternate between establishing Wides, character Close-ups, and motion tracking to avoid static framing. Your project currently has ${pacing.shotCount} shots averaging ${pacing.averageShotDuration}s each.`,
+          stageInsight: `Cinematography: ${pacing.shotCount} shots defined with custom camera framing and motion.`,
+          suggestedActions: [
+            {
+              id: 'act_proceed_to_storyboard',
+              label: 'Advance to Storyboard',
+              description: 'Transitions shots to visual panel representations.',
+              actionType: 'navigate_stage',
+              requiresConfirmation: false,
+              payload: { targetStage: 'storyboard' },
+            },
             {
               id: 'act_check_coverage',
               label: 'Run Shot Coverage Check',
@@ -368,6 +399,14 @@ CRITICAL RULES:
               actionType: 'breakdown_advice',
               requiresConfirmation: false,
             },
+          ],
+        };
+
+      case 'storyboard':
+        return {
+          reply: `Your storyboard currently contains ${pacing.shotCount} visual panels. Review character appearance continuity, lighting palettes, and aspect ratio boundaries before generating technical prompts.`,
+          stageInsight: `Visual Continuity: ${pacing.shotCount} panels organized with aspect ratio canvas previews.`,
+          suggestedActions: [
             {
               id: 'act_proceed_to_prompts',
               label: 'Advance to Prompts Stage',

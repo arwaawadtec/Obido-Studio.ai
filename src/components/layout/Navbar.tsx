@@ -23,6 +23,7 @@ interface NavbarProps {
   onOpenSettings: () => void;
   onOpenHelp: () => void;
   activeProjectTitle?: string;
+  activeProjectId?: string;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -31,6 +32,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenSettings,
   onOpenHelp,
   activeProjectTitle,
+  activeProjectId,
 }) => {
   const lang = storage.getLanguagePreference();
   const currentUser = auth.getCurrentUser();
@@ -65,7 +67,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="flex items-center gap-3 shrink-0">
           <button
             onClick={() => router.navigate('/app')}
-            className="flex items-center gap-2.5 text-left group focus-visible:outline-none"
+            className="flex items-center gap-2.5 text-left group focus-visible:outline-none cursor-pointer"
           >
             <div className="w-9 h-9 rounded-lg bg-[#11152B] flex items-center justify-center text-white shadow-sm group-hover:bg-[#635BFF] transition-colors">
               <Video className="w-5 h-5 text-[#38D9F9]" />
@@ -86,6 +88,18 @@ export const Navbar: React.FC<NavbarProps> = ({
                 {activeProjectTitle}
               </span>
             </div>
+          )}
+
+          {activeProjectTitle && activeProjectId && !currentPath.includes('/workspace') && (
+            <button
+              onClick={() => router.navigate(`/app/workspace/${activeProjectId}`)}
+              className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-[#635BFF] bg-[#635BFF]/10 hover:bg-[#635BFF]/15 border border-[#635BFF]/25 rounded-md transition-colors cursor-pointer group"
+              title={lang === 'ar' ? 'العودة إلى المشروع النشط ومواصلة الإنتاج' : 'Return to Active Project'}
+            >
+              <Film className="w-3.5 h-3.5 text-[#635BFF]" />
+              <span className="text-[#11152B] font-semibold max-w-[140px] truncate">{activeProjectTitle}</span>
+              <span className="text-[#635BFF] group-hover:translate-x-0.5 transition-transform font-bold">→</span>
+            </button>
           )}
         </div>
 

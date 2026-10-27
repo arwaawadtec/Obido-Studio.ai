@@ -62,12 +62,35 @@ service cloud.firestore {
         return data.keys().hasAll(['id', 'userId', 'title', 'createdAt']) &&
           data.id is string && data.id.size() <= 128 &&
           data.userId is string && data.userId.size() <= 128 &&
-          data.title is string && data.title.size() <= 256 &&
-          data.userId == request.auth.uid;
+          data.title is string && data.title.size() <= 256;
       }
 
-      allow get: if isSignedIn() && existing().userId == request.auth.uid;
-      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      function isProjectOwner(projectData) {
+        return isSignedIn() && projectData.userId == request.auth.uid;
+      }
+
+      function hasEmailAccess(emailsList) {
+        return isSignedIn() &&
+          request.auth.token.email != null &&
+          emailsList is list &&
+          request.auth.token.email.lower() in emailsList;
+      }
+
+      function isProjectCollaborator(projectData) {
+        return isProjectOwner(projectData) ||
+          ('memberEmails' in projectData && hasEmailAccess(projectData.memberEmails));
+      }
+
+      function isProjectEditor(projectData) {
+        return isProjectOwner(projectData) ||
+          ('editorEmails' in projectData && hasEmailAccess(projectData.editorEmails));
+      }
+
+      allow get: if isProjectCollaborator(existing());
+      allow list: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        (request.auth.token.email != null && resource.data.memberEmails is list && request.auth.token.email.lower() in resource.data.memberEmails)
+      );
 
       allow create: if isSignedIn() &&
         isValidId(projectId) &&
@@ -76,14 +99,20 @@ service cloud.firestore {
 
       allow update: if isSignedIn() &&
         isValidId(projectId) &&
-        existing().userId == request.auth.uid &&
         isValidProject(incoming()) &&
-        incoming().userId == existing().userId &&
-        incoming().id == existing().id;
+        incoming().id == existing().id &&
+        incoming().userId == existing().userId && (
+          // Owner can update any project field including team members
+          isProjectOwner(existing()) ||
+          // Editor can update content but cannot alter ownership or members list
+          (isProjectEditor(existing()) &&
+           incoming().collaborators == existing().collaborators &&
+           incoming().memberEmails == existing().memberEmails &&
+           incoming().editorEmails == existing().editorEmails &&
+           incoming().viewerEmails == existing().viewerEmails)
+        );
 
-      allow delete: if isSignedIn() &&
-        isValidId(projectId) &&
-        existing().userId == request.auth.uid;
+      allow delete: if isProjectOwner(existing());
     }
 
     // Media Assets Metadata Collection
@@ -94,12 +123,24 @@ service cloud.firestore {
           data.projectId is string && data.projectId.size() <= 128 &&
           data.userId is string && data.userId.size() <= 128 &&
           data.name is string && data.name.size() <= 256 &&
-          data.type is string && data.type.size() <= 32 &&
-          data.userId == request.auth.uid;
+          data.type is string && data.type.size() <= 32;
       }
 
-      allow get: if isSignedIn() && existing().userId == request.auth.uid;
-      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      function hasEmailAccess(emailsList) {
+        return isSignedIn() &&
+          request.auth.token.email != null &&
+          emailsList is list &&
+          request.auth.token.email.lower() in emailsList;
+      }
+
+      allow get: if isSignedIn() && (
+        existing().userId == request.auth.uid ||
+        ('memberEmails' in existing() && hasEmailAccess(existing().memberEmails))
+      );
+      allow list: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        (request.auth.token.email != null && resource.data.memberEmails is list && request.auth.token.email.lower() in resource.data.memberEmails)
+      );
 
       allow create: if isSignedIn() &&
         isValidId(assetId) &&

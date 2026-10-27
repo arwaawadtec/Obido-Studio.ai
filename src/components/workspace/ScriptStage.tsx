@@ -21,10 +21,15 @@ import { GlobalErrorCard } from '../common/GlobalErrorCard';
 
 interface ScriptStageProps {
   project: Project;
-  onProceedToStoryboard: () => void;
+  onProceedToScenes?: () => void;
+  onProceedToStoryboard?: () => void;
 }
 
-export const ScriptStage: React.FC<ScriptStageProps> = ({ project, onProceedToStoryboard }) => {
+export const ScriptStage: React.FC<ScriptStageProps> = ({
+  project,
+  onProceedToScenes,
+  onProceedToStoryboard,
+}) => {
   const lang = storage.getLanguagePreference();
 
   const currentScript =
@@ -280,8 +285,12 @@ export const ScriptStage: React.FC<ScriptStageProps> = ({ project, onProceedToSt
 
   const handleProceed = () => {
     handleSaveCurrentVersion();
-    storage.setWorkflowStage(project.id, 'storyboard');
-    onProceedToStoryboard();
+    storage.setWorkflowStage(project.id, 'scenes');
+    if (onProceedToScenes) {
+      onProceedToScenes();
+    } else if (onProceedToStoryboard) {
+      onProceedToStoryboard();
+    }
   };
 
   return (
@@ -290,7 +299,7 @@ export const ScriptStage: React.FC<ScriptStageProps> = ({ project, onProceedToSt
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#E3E6EF]">
         <div>
           <div className="text-xs text-[#635BFF] font-semibold tracking-wide uppercase font-mono mb-1">
-            {lang === 'ar' ? 'المرحلة 2 من 8' : 'Stage 2 of 8'}
+            {lang === 'ar' ? 'المرحلة 2 من 10' : 'Stage 2 of 10'}
           </div>
           <h2 className="text-xl font-bold text-[#11152B] font-display">
             {lang === 'ar' ? 'السيناريو والسرد الصوتي' : 'Screenplay & Narrative Script'}
@@ -307,7 +316,7 @@ export const ScriptStage: React.FC<ScriptStageProps> = ({ project, onProceedToSt
             type="button"
             onClick={handleSaveCurrentVersion}
             disabled={isSaving}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#11152B] bg-white border border-[#E3E6EF] hover:bg-[#F6F7FB] rounded-lg transition-colors"
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#11152B] bg-white border border-[#E3E6EF] hover:bg-[#F6F7FB] rounded-lg transition-colors cursor-pointer"
           >
             {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
             <span>{lang === 'ar' ? 'حفظ المسودة' : 'Save Script'}</span>
@@ -316,9 +325,9 @@ export const ScriptStage: React.FC<ScriptStageProps> = ({ project, onProceedToSt
           <button
             type="button"
             onClick={handleProceed}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#635BFF] hover:bg-[#5249ea] rounded-lg shadow-sm transition-all"
+            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#635BFF] hover:bg-[#5249ea] rounded-lg shadow-sm transition-all cursor-pointer"
           >
-            <span>{lang === 'ar' ? 'المتابعة إلى لوحة القصة' : 'Proceed to Storyboard'}</span>
+            <span>{lang === 'ar' ? 'المتابعة إلى المشاهد (المرحلة 3)' : 'Proceed to Scenes (Stage 3)'}</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>

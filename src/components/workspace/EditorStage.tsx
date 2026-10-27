@@ -176,7 +176,7 @@ export const EditorStage: React.FC<EditorStageProps> = ({ project, onProceedToEx
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-[#E3E6EF]">
         <div>
           <div className="text-xs text-[#635BFF] font-semibold tracking-wide uppercase font-mono mb-1">
-            {lang === 'ar' ? 'المرحلة 7 من 8' : 'Stage 7 of 8'}
+            {lang === 'ar' ? 'المرحلة 9 من 10' : 'Stage 9 of 10'}
           </div>
           <h2 className="text-xl font-bold text-[#11152B] font-display">
             {lang === 'ar' ? 'استوديو المونتاج والتايم لاين' : 'Multi-Track Timeline Studio'}
@@ -192,9 +192,9 @@ export const EditorStage: React.FC<EditorStageProps> = ({ project, onProceedToEx
           <button
             type="button"
             onClick={handleProceed}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#635BFF] hover:bg-[#5249ea] rounded-lg shadow-sm transition-all"
+            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#635BFF] hover:bg-[#5249ea] rounded-lg shadow-sm transition-all cursor-pointer"
           >
-            <span>{lang === 'ar' ? 'المتابعة إلى التصدير' : 'Proceed to Export'}</span>
+            <span>{lang === 'ar' ? 'المتابعة إلى التصدير (المرحلة 10)' : 'Proceed to Export (Stage 10)'}</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>

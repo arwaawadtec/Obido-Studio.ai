@@ -143,6 +143,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
     switch (stage) {
       case 'brief': return lang === 'ar' ? 'الملخص' : 'Brief';
       case 'script': return lang === 'ar' ? 'السيناريو' : 'Script';
+      case 'scenes': return lang === 'ar' ? 'المشاهد' : 'Scenes';
+      case 'shots': return lang === 'ar' ? 'اللقطات' : 'Shot List';
       case 'storyboard': return lang === 'ar' ? 'لوحة القصة' : 'Storyboard';
       case 'prompts': return lang === 'ar' ? 'الموجهات' : 'Prompts';
       case 'assets': return lang === 'ar' ? 'الوسائط' : 'Assets';
@@ -414,13 +416,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
               className="text-xs px-2.5 py-1.5 bg-white border border-[#E3E6EF] rounded-lg focus:border-[#635BFF] focus:outline-none text-[#62677A]"
             >
               <option value="all">{lang === 'ar' ? 'جميع المراحل' : 'All Stages'}</option>
-              <option value="brief">Brief</option>
-              <option value="script">Script</option>
-              <option value="storyboard">Storyboard</option>
-              <option value="prompts">Prompts</option>
-              <option value="generation">Generation</option>
-              <option value="editing">Editing</option>
-              <option value="export">Export</option>
+              <option value="brief">1. Brief</option>
+              <option value="script">2. Script</option>
+              <option value="scenes">3. Scenes</option>
+              <option value="shots">4. Shot List</option>
+              <option value="storyboard">5. Storyboard</option>
+              <option value="prompts">6. Prompts</option>
+              <option value="assets">7. Assets</option>
+              <option value="generation">8. Generation</option>
+              <option value="editing">9. Editing</option>
+              <option value="export">10. Export</option>
             </select>
           </div>
         </div>

@@ -89,13 +89,14 @@ export default function App() {
     handleSelectProject(newProjectId);
   };
 
-  // Determine active project for workspace
+  // Determine active project for workspace & navigation context
   let workspaceProjectId: string | undefined;
   if (currentRoute.path === '/app/workspace') {
     workspaceProjectId = (currentRoute as any).projectId;
   }
-  const activeWorkspaceProject = workspaceProjectId
-    ? projects.find((p) => p.id === workspaceProjectId) || storage.getProject(workspaceProjectId, currentUser?.id)
+  const activeId = workspaceProjectId || storage.getActiveProjectId();
+  const activeWorkspaceProject = activeId
+    ? projects.find((p) => p.id === activeId) || storage.getProject(activeId, currentUser?.id)
     : projects[0];
 
   // Route 1: Public Marketing Landing Page
@@ -144,6 +145,7 @@ export default function App() {
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenHelp={() => setIsHelpOpen(true)}
         activeProjectTitle={activeWorkspaceProject?.title}
+        activeProjectId={activeWorkspaceProject?.id}
       />
 
       {/* Main Authenticated View Content */}
@@ -167,7 +169,10 @@ export default function App() {
         )}
 
         {currentRoute.path === '/app/templates' && (
-          <TemplatesView onSelectProject={handleSelectProject} />
+          <TemplatesView
+            onSelectProject={handleSelectProject}
+            activeProject={activeWorkspaceProject}
+          />
         )}
       </div>
 

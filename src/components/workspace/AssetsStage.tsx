@@ -18,10 +18,15 @@ import { storage } from '../../services/storage';
 
 interface AssetsStageProps {
   project: Project;
-  onProceedToEditing: () => void;
+  onProceedToGeneration?: () => void;
+  onProceedToEditing?: () => void;
 }
 
-export const AssetsStage: React.FC<AssetsStageProps> = ({ project, onProceedToEditing }) => {
+export const AssetsStage: React.FC<AssetsStageProps> = ({
+  project,
+  onProceedToGeneration,
+  onProceedToEditing,
+}) => {
   const lang = storage.getLanguagePreference();
 
   const [filterType, setFilterType] = useState<string>('all');
@@ -94,8 +99,12 @@ export const AssetsStage: React.FC<AssetsStageProps> = ({ project, onProceedToEd
   };
 
   const handleProceed = () => {
-    storage.setWorkflowStage(project.id, 'editing');
-    onProceedToEditing();
+    storage.setWorkflowStage(project.id, 'generation');
+    if (onProceedToGeneration) {
+      onProceedToGeneration();
+    } else if (onProceedToEditing) {
+      onProceedToEditing();
+    }
   };
 
   return (
@@ -104,7 +113,7 @@ export const AssetsStage: React.FC<AssetsStageProps> = ({ project, onProceedToEd
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#E3E6EF]">
         <div>
           <div className="text-xs text-[#635BFF] font-semibold tracking-wide uppercase font-mono mb-1">
-            {lang === 'ar' ? 'المرحلة 6 من 8' : 'Stage 6 of 8'}
+            {lang === 'ar' ? 'المرحلة 7 من 10' : 'Stage 7 of 10'}
           </div>
           <h2 className="text-xl font-bold text-[#11152B] font-display">
             {lang === 'ar' ? 'مكتبة الوسائط والأصول المنتجة' : 'Assets & Media Repository'}
@@ -132,9 +141,9 @@ export const AssetsStage: React.FC<AssetsStageProps> = ({ project, onProceedToEd
           <button
             type="button"
             onClick={handleProceed}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#635BFF] hover:bg-[#5249ea] rounded-lg shadow-sm transition-all"
+            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#635BFF] hover:bg-[#5249ea] rounded-lg shadow-sm transition-all cursor-pointer"
           >
-            <span>{lang === 'ar' ? 'المتابعة إلى المونتاج' : 'Proceed to Editor'}</span>
+            <span>{lang === 'ar' ? 'المتابعة إلى التوليد (المرحلة 8)' : 'Proceed to Generation (Stage 8)'}</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>

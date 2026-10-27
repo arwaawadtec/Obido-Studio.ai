@@ -24,7 +24,7 @@ import {
   OperationType,
   ConnectionClassification,
 } from './firebase';
-import { Project, User, Asset, SaveProjectResult } from '../types';
+import { Project, User, Asset, SaveProjectResult, ProjectCollaborator, ProjectPermission } from '../types';
 
 export type ProfileReadStatus = 'found' | 'not_found' | 'unavailable';
 
@@ -287,23 +287,58 @@ export class FirestoreService {
     }
   }
 
-  async getProjects(userId: string): Promise<Project[]> {
+  async getProjects(userId: string, userEmail?: string): Promise<Project[]> {
     if (!this.isAvailable() || !userId) return [];
     const path = 'projects';
     try {
-      // Query enforces owner isolation matching security rules
-      const q = query(
+      const projectsMap = new Map<string, Project>();
+      const normalizedEmail = userEmail?.trim().toLowerCase();
+
+      // Query 1: Projects owned by the user
+      const qOwner = query(
         collection(db, 'projects'),
         where('userId', '==', userId)
       );
-      const snapshot = await executeWithFirestoreRetry(
-        () => getDocs(q),
-        { operationName: `getProjects(${userId})` }
+      const ownerSnapshot = await executeWithFirestoreRetry(
+        () => getDocs(qOwner),
+        { operationName: `getProjects:owner(${userId})` }
       );
-      const projects: Project[] = [];
-      snapshot.forEach((docSnap) => {
-        projects.push(docSnap.data() as Project);
+      ownerSnapshot.forEach((docSnap) => {
+        const p = docSnap.data() as Project;
+        p.userPermission = 'owner';
+        projectsMap.set(p.id, p);
       });
+
+      // Query 2: Projects shared with user via email
+      if (normalizedEmail) {
+        try {
+          const qShared = query(
+            collection(db, 'projects'),
+            where('memberEmails', 'array-contains', normalizedEmail)
+          );
+          const sharedSnapshot = await executeWithFirestoreRetry(
+            () => getDocs(qShared),
+            { operationName: `getProjects:shared(${normalizedEmail})` }
+          );
+          sharedSnapshot.forEach((docSnap) => {
+            const p = docSnap.data() as Project;
+            if (!projectsMap.has(p.id)) {
+              if (p.userId === userId) {
+                p.userPermission = 'owner';
+              } else if (p.editorEmails?.includes(normalizedEmail)) {
+                p.userPermission = 'editor';
+              } else {
+                p.userPermission = 'viewer';
+              }
+              projectsMap.set(p.id, p);
+            }
+          });
+        } catch (sharedErr) {
+          console.warn('[FirestoreService] Querying shared projects failed:', sharedErr);
+        }
+      }
+
+      const projects = Array.from(projectsMap.values());
       // Sort client-side by updatedAt descending
       return projects.sort(
         (a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()
@@ -314,10 +349,11 @@ export class FirestoreService {
         return [];
       }
       handleFirestoreError(error, OperationType.LIST, path);
+      return [];
     }
   }
 
-  async getProject(projectId: string, userId: string): Promise<Project | null> {
+  async getProject(projectId: string, userId: string, userEmail?: string): Promise<Project | null> {
     if (!this.isAvailable() || !projectId) return null;
     const path = `projects/${projectId}`;
     try {
@@ -327,10 +363,24 @@ export class FirestoreService {
       );
       if (!snapshot.exists()) return null;
       const data = snapshot.data() as Project;
-      // Server-side / rule boundary: enforce user ownership
-      if (data.userId !== userId) {
+
+      const normalizedEmail = userEmail?.trim().toLowerCase();
+      const isOwner = data.userId === userId;
+      const isCollaborator = normalizedEmail && data.memberEmails?.includes(normalizedEmail);
+
+      // Server-side / rule boundary: enforce user ownership or collaboration
+      if (!isOwner && !isCollaborator) {
         throw new Error('Access denied: You do not have permission to view this project.');
       }
+
+      if (isOwner) {
+        data.userPermission = 'owner';
+      } else if (normalizedEmail && data.editorEmails?.includes(normalizedEmail)) {
+        data.userPermission = 'editor';
+      } else {
+        data.userPermission = 'viewer';
+      }
+
       return data;
     } catch (error) {
       if (isOfflineError(error)) {
@@ -338,6 +388,178 @@ export class FirestoreService {
         return null;
       }
       handleFirestoreError(error, OperationType.GET, path);
+      return null;
+    }
+  }
+
+  async inviteCollaborator(
+    projectId: string,
+    inviterUserId: string,
+    inviterEmail: string,
+    inviteeEmail: string,
+    role: 'editor' | 'viewer'
+  ): Promise<{ success: boolean; collaborators: ProjectCollaborator[]; error?: string }> {
+    if (!this.isAvailable() || !projectId) {
+      return { success: false, collaborators: [], error: 'Cloud database is unavailable.' };
+    }
+    const cleanEmail = inviteeEmail.trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return { success: false, collaborators: [], error: 'Please provide a valid email address.' };
+    }
+    const cleanInviterEmail = (inviterEmail || '').trim().toLowerCase();
+    if (cleanEmail === cleanInviterEmail) {
+      return { success: false, collaborators: [], error: 'You are already the owner of this project.' };
+    }
+
+    try {
+      const docRef = doc(db, 'projects', projectId);
+      const snapshot = await getDoc(docRef);
+      if (!snapshot.exists()) {
+        return { success: false, collaborators: [], error: 'Project not found.' };
+      }
+      const data = snapshot.data() as Project;
+      if (data.userId !== inviterUserId) {
+        return { success: false, collaborators: data.collaborators || [], error: 'Only the project owner can invite collaborators.' };
+      }
+
+      const existingCollaborators: ProjectCollaborator[] = data.collaborators || [];
+      const filtered = existingCollaborators.filter((c) => c.email.toLowerCase() !== cleanEmail);
+
+      const newCollaborator: ProjectCollaborator = {
+        email: cleanEmail,
+        role,
+        invitedAt: new Date().toISOString(),
+        invitedBy: cleanInviterEmail || inviterUserId,
+      };
+      filtered.push(newCollaborator);
+
+      const ownerEmail = data.ownerEmail?.toLowerCase() || cleanInviterEmail;
+      const memberEmails = Array.from(new Set([ownerEmail, ...filtered.map((c) => c.email.toLowerCase())])).filter(Boolean);
+      const editorEmails = filtered.filter((c) => c.role === 'editor').map((c) => c.email.toLowerCase());
+      const viewerEmails = filtered.filter((c) => c.role === 'viewer').map((c) => c.email.toLowerCase());
+
+      const updatePayload = sanitizeFirestoreData({
+        ownerEmail,
+        collaborators: filtered,
+        memberEmails,
+        editorEmails,
+        viewerEmails,
+        updatedAt: new Date().toISOString(),
+      });
+
+      await executeWithFirestoreRetry(
+        () => setDoc(docRef, updatePayload, { merge: true }),
+        { operationName: `inviteCollaborator(${projectId}, ${cleanEmail})` }
+      );
+
+      return { success: true, collaborators: filtered };
+    } catch (err: any) {
+      console.error('[FirestoreService] Failed to invite collaborator:', err);
+      return { success: false, collaborators: [], error: err?.message || 'Failed to send project invitation.' };
+    }
+  }
+
+  async updateCollaboratorRole(
+    projectId: string,
+    ownerUserId: string,
+    targetEmail: string,
+    newRole: 'editor' | 'viewer'
+  ): Promise<{ success: boolean; collaborators: ProjectCollaborator[]; error?: string }> {
+    if (!this.isAvailable() || !projectId) {
+      return { success: false, collaborators: [], error: 'Cloud database is unavailable.' };
+    }
+    const cleanTargetEmail = targetEmail.trim().toLowerCase();
+
+    try {
+      const docRef = doc(db, 'projects', projectId);
+      const snapshot = await getDoc(docRef);
+      if (!snapshot.exists()) {
+        return { success: false, collaborators: [], error: 'Project not found.' };
+      }
+      const data = snapshot.data() as Project;
+      if (data.userId !== ownerUserId) {
+        return { success: false, collaborators: data.collaborators || [], error: 'Only the project owner can change permission levels.' };
+      }
+
+      const existingCollaborators: ProjectCollaborator[] = data.collaborators || [];
+      const updatedList = existingCollaborators.map((c) => {
+        if (c.email.toLowerCase() === cleanTargetEmail) {
+          return { ...c, role: newRole };
+        }
+        return c;
+      });
+
+      const ownerEmail = data.ownerEmail?.toLowerCase() || '';
+      const memberEmails = Array.from(new Set([ownerEmail, ...updatedList.map((c) => c.email.toLowerCase())])).filter(Boolean);
+      const editorEmails = updatedList.filter((c) => c.role === 'editor').map((c) => c.email.toLowerCase());
+      const viewerEmails = updatedList.filter((c) => c.role === 'viewer').map((c) => c.email.toLowerCase());
+
+      const updatePayload = sanitizeFirestoreData({
+        collaborators: updatedList,
+        memberEmails,
+        editorEmails,
+        viewerEmails,
+        updatedAt: new Date().toISOString(),
+      });
+
+      await executeWithFirestoreRetry(
+        () => setDoc(docRef, updatePayload, { merge: true }),
+        { operationName: `updateCollaboratorRole(${projectId}, ${cleanTargetEmail})` }
+      );
+
+      return { success: true, collaborators: updatedList };
+    } catch (err: any) {
+      console.error('[FirestoreService] Failed to update collaborator role:', err);
+      return { success: false, collaborators: [], error: err?.message || 'Failed to update collaborator role.' };
+    }
+  }
+
+  async removeCollaborator(
+    projectId: string,
+    ownerUserId: string,
+    targetEmail: string
+  ): Promise<{ success: boolean; collaborators: ProjectCollaborator[]; error?: string }> {
+    if (!this.isAvailable() || !projectId) {
+      return { success: false, collaborators: [], error: 'Cloud database is unavailable.' };
+    }
+    const cleanTargetEmail = targetEmail.trim().toLowerCase();
+
+    try {
+      const docRef = doc(db, 'projects', projectId);
+      const snapshot = await getDoc(docRef);
+      if (!snapshot.exists()) {
+        return { success: false, collaborators: [], error: 'Project not found.' };
+      }
+      const data = snapshot.data() as Project;
+      if (data.userId !== ownerUserId) {
+        return { success: false, collaborators: data.collaborators || [], error: 'Only the project owner can revoke project access.' };
+      }
+
+      const existingCollaborators: ProjectCollaborator[] = data.collaborators || [];
+      const filtered = existingCollaborators.filter((c) => c.email.toLowerCase() !== cleanTargetEmail);
+
+      const ownerEmail = data.ownerEmail?.toLowerCase() || '';
+      const memberEmails = Array.from(new Set([ownerEmail, ...filtered.map((c) => c.email.toLowerCase())])).filter(Boolean);
+      const editorEmails = filtered.filter((c) => c.role === 'editor').map((c) => c.email.toLowerCase());
+      const viewerEmails = filtered.filter((c) => c.role === 'viewer').map((c) => c.email.toLowerCase());
+
+      const updatePayload = sanitizeFirestoreData({
+        collaborators: filtered,
+        memberEmails,
+        editorEmails,
+        viewerEmails,
+        updatedAt: new Date().toISOString(),
+      });
+
+      await executeWithFirestoreRetry(
+        () => setDoc(docRef, updatePayload, { merge: true }),
+        { operationName: `removeCollaborator(${projectId}, ${cleanTargetEmail})` }
+      );
+
+      return { success: true, collaborators: filtered };
+    } catch (err: any) {
+      console.error('[FirestoreService] Failed to remove collaborator:', err);
+      return { success: false, collaborators: [], error: err?.message || 'Failed to revoke collaborator access.' };
     }
   }
 
@@ -404,6 +626,7 @@ export class FirestoreService {
         return [];
       }
       handleFirestoreError(error, OperationType.LIST, path);
+      return [];
     }
   }
 }

@@ -41,7 +41,12 @@
         "generationJobs": { "type": "array" },
         "timeline": { "type": "object" },
         "exportJobs": { "type": "array" },
-        "migratedFromLocal": { "type": "boolean" }
+        "migratedFromLocal": { "type": "boolean" },
+        "ownerEmail": { "type": "string", "maxLength": 256 },
+        "collaborators": { "type": "array" },
+        "memberEmails": { "type": "array" },
+        "editorEmails": { "type": "array" },
+        "viewerEmails": { "type": "array" }
       },
       "required": ["id", "userId", "title", "createdAt"]
     },

@@ -31,10 +31,15 @@ import {
 
 interface PromptsStageProps {
   project: Project;
-  onProceedToGeneration: () => void;
+  onProceedToAssets?: () => void;
+  onProceedToGeneration?: () => void;
 }
 
-export const PromptsStage: React.FC<PromptsStageProps> = ({ project, onProceedToGeneration }) => {
+export const PromptsStage: React.FC<PromptsStageProps> = ({
+  project,
+  onProceedToAssets,
+  onProceedToGeneration,
+}) => {
   const lang = storage.getLanguagePreference();
 
   const scenes = project.scenes || [];
@@ -262,8 +267,12 @@ export const PromptsStage: React.FC<PromptsStageProps> = ({ project, onProceedTo
     if (visualPrompt.trim() && activeShot) {
       handleSaveCurrentPrompt();
     }
-    storage.setWorkflowStage(project.id, 'generation');
-    onProceedToGeneration();
+    storage.setWorkflowStage(project.id, 'assets');
+    if (onProceedToAssets) {
+      onProceedToAssets();
+    } else if (onProceedToGeneration) {
+      onProceedToGeneration();
+    }
   };
 
   if (scenes.length === 0 || shots.length === 0) {
@@ -294,7 +303,7 @@ export const PromptsStage: React.FC<PromptsStageProps> = ({ project, onProceedTo
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#E3E6EF]">
         <div>
           <div className="text-xs text-[#635BFF] font-semibold tracking-wide uppercase font-mono mb-1">
-            {lang === 'ar' ? 'المرحلة 4 من 8' : 'Stage 4 of 8'}
+            {lang === 'ar' ? 'المرحلة 6 من 10' : 'Stage 6 of 10'}
           </div>
           <h2 className="text-xl font-bold text-[#11152B] font-display flex items-center gap-2">
             <span>{lang === 'ar' ? 'مساحة هندسة موجهات اللقطات' : 'Shot Prompt Engineering Studio'}</span>
@@ -314,7 +323,7 @@ export const PromptsStage: React.FC<PromptsStageProps> = ({ project, onProceedTo
             type="button"
             onClick={handleSaveCurrentPrompt}
             disabled={isSaving}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#11152B] bg-white border border-[#E3E6EF] hover:bg-[#F6F7FB] rounded-lg transition-colors shadow-xs"
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#11152B] bg-white border border-[#E3E6EF] hover:bg-[#F6F7FB] rounded-lg transition-colors shadow-xs cursor-pointer"
           >
             {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
             <span>{lang === 'ar' ? 'حفظ الموجهات' : 'Save Version'}</span>
@@ -323,9 +332,9 @@ export const PromptsStage: React.FC<PromptsStageProps> = ({ project, onProceedTo
           <button
             type="button"
             onClick={handleProceed}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#635BFF] hover:bg-[#5249ea] rounded-lg shadow-sm transition-all"
+            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#635BFF] hover:bg-[#5249ea] rounded-lg shadow-sm transition-all cursor-pointer"
           >
-            <span>{lang === 'ar' ? 'المتابعة إلى التوليد' : 'Proceed to Generation'}</span>
+            <span>{lang === 'ar' ? 'المتابعة إلى الوسائط (المرحلة 7)' : 'Proceed to Assets (Stage 7)'}</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>

@@ -32,12 +32,14 @@ import {
 
 interface GenerationStageProps {
   project: Project;
-  onProceedToAssets: () => void;
+  onProceedToEditing?: () => void;
+  onProceedToAssets?: () => void;
   onNavigateToPrompts?: () => void;
 }
 
 export const GenerationStage: React.FC<GenerationStageProps> = ({
   project,
+  onProceedToEditing,
   onProceedToAssets,
   onNavigateToPrompts,
 }) => {
@@ -290,8 +292,12 @@ export const GenerationStage: React.FC<GenerationStageProps> = ({
   };
 
   const handleProceed = () => {
-    storage.setWorkflowStage(project.id, 'assets');
-    onProceedToAssets();
+    storage.setWorkflowStage(project.id, 'editing');
+    if (onProceedToEditing) {
+      onProceedToEditing();
+    } else if (onProceedToAssets) {
+      onProceedToAssets();
+    }
   };
 
   return (
@@ -300,18 +306,18 @@ export const GenerationStage: React.FC<GenerationStageProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#E3E6EF]">
         <div>
           <div className="text-xs text-[#635BFF] font-semibold tracking-wide uppercase font-mono mb-1">
-            {lang === 'ar' ? 'المرحلة 5 من 8' : 'Stage 5 of 8'}
+            {lang === 'ar' ? 'المرحلة 8 من 10' : 'Stage 8 of 10'}
           </div>
           <h2 className="text-xl font-bold text-[#11152B] font-display flex items-center gap-2">
-            <span>{lang === 'ar' ? 'توليد الفيديو وإدارة مهام اللقطات' : 'Shot Video Generation & Dispatcher'}</span>
-            <span className="text-xs px-2 py-0.5 rounded-full font-mono font-medium bg-[#635BFF]/10 text-[#635BFF]">
-              Shot-First
+            <span>{lang === 'ar' ? 'محاكاة توليد اللقطات ومسودة الإنتاج' : 'Shot Video Generation & Take Simulation'}</span>
+            <span className="text-xs px-2 py-0.5 rounded-full font-mono font-medium bg-amber-500/10 text-amber-700 border border-amber-300">
+              {lang === 'ar' ? 'وضع المحاكاة' : 'Simulation Mode'}
             </span>
           </h2>
           <p className="text-xs text-[#62677A] mt-0.5">
             {lang === 'ar'
-              ? 'واجهة موحدة لتشغيل نماذج توليد الفيديو لكل لقطة، مع الشفافية الصريحة لمنع النجاح الوهمي'
-              : 'Dispatch individual shot takes with transparent real vs simulated reporting and zero fabricated success'}
+              ? 'نموذج أولي لتوليد مقاطع تجريبية محلية للتحقق من أزمنة اللقطات وحركة الكاميرا دون استهلاك موارد سحابية وهمية'
+              : 'Local take simulation pipeline: validates shot timing, prompt parameters, and framing before live video models connect in Phase 4'}
           </p>
         </div>
 
@@ -320,7 +326,7 @@ export const GenerationStage: React.FC<GenerationStageProps> = ({
             <button
               type="button"
               onClick={onNavigateToPrompts}
-              className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#11152B] bg-white border border-[#E3E6EF] hover:bg-[#F6F7FB] rounded-lg transition-colors shadow-xs"
+              className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#11152B] bg-white border border-[#E3E6EF] hover:bg-[#F6F7FB] rounded-lg transition-colors shadow-xs cursor-pointer"
             >
               <RotateCcw className="w-3.5 h-3.5" />
               <span>{lang === 'ar' ? 'العودة للموجهات' : 'Edit Prompts'}</span>
@@ -330,9 +336,9 @@ export const GenerationStage: React.FC<GenerationStageProps> = ({
           <button
             type="button"
             onClick={handleProceed}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#635BFF] hover:bg-[#5249ea] rounded-lg shadow-sm transition-all"
+            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#635BFF] hover:bg-[#5249ea] rounded-lg shadow-sm transition-all cursor-pointer"
           >
-            <span>{lang === 'ar' ? 'المتابعة إلى مكتبة الوسائط' : 'Proceed to Assets'}</span>
+            <span>{lang === 'ar' ? 'المتابعة إلى المونتاج (المرحلة 9)' : 'Proceed to Editor (Stage 9)'}</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -664,12 +670,17 @@ export const GenerationStage: React.FC<GenerationStageProps> = ({
                     {activeJobForShot ? (
                       <>
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Generating Shot {activeShot.shotNumber}...</span>
+                        <span>{lang === 'ar' ? `جاري المحاكاة للقطة ${activeShot.shotNumber}...` : `Simulating Take ${activeShot.shotNumber}...`}</span>
                       </>
                     ) : (
                       <>
-                        <Sparkles className="w-3.5 h-3.5" />
-                        <span>Generate Shot Take</span>
+                        <Sparkles className="w-3.5 h-3.5 text-[#38D9F9]" />
+                        <span className="flex items-center gap-1.5">
+                          <span>{lang === 'ar' ? 'توليد لقطة تجريبية (محاكاة)' : 'Generate Simulated Take'}</span>
+                          <span className="text-[9px] uppercase font-mono px-1.5 py-0.2 rounded bg-black/30 text-white/90">
+                            {lang === 'ar' ? 'محاكاة' : 'Sim'}
+                          </span>
+                        </span>
                       </>
                     )}
                   </button>
